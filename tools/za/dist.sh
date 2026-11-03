@@ -29,7 +29,7 @@ USERPROFILE="$(cygpath -w ~)" build/gen-venv/Scripts/python.exe -m PyInstaller -
 build/gen-venv/Scripts/python.exe tools/pe_no_cfg.py build/helper/lasgen/lasgen.exe
 # 2b. the button icons + opt-in battle layout preparer (zaprompts + ooz; all resources come from the player's game)
 mkdir -p build/ooz
-(cd third_party/ooz && g++ -O2 -shared -static -include sys/stat.h -Dmain=ooz_main kraken.cpp bitknit.cpp lzna.cpp \
+(cd third_party/ooz && ${CXX:-clang++} -O2 -shared -static -fuse-ld=lld -include sys/stat.h -Dmain=ooz_main kraken.cpp bitknit.cpp lzna.cpp \
     ooz_lib.cpp -o ../../build/ooz/ooz.dll -Wl,-u,__mingw_fe_dfl_env)  # (-u: newer MinGW libmingwex needs CRT_fp10 from libmingw32)
 if [ ! -f build/prompts-venv/.ok2 ]; then  # (.ok2: texture2ddecoder, the team icons' BC7)
     py -3.12 -m venv build/prompts-venv
