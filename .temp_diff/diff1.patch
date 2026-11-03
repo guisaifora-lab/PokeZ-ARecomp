@@ -1,0 +1,719 @@
+diff --git a/.github/workflows/windows-build.yml b/.github/workflows/windows-build.yml
+new file mode 100644
+index 000000000..81af8e5de
+--- /dev/null
++++ b/.github/workflows/windows-build.yml
+@@ -0,0 +1,73 @@
++# Windows release build (the same steps as docs/BUILD-windows.md "Package", on a GitHub runner): produces
++# "LAS Recomp-<version>-windows.zip" as a workflow artifact, and as a GitHub release asset when run on a tag (v*) or
++# with "publish" ticked. No game code is inside; the start screen compiles it on the player's machine for that
++# machine's CPU (runtime/gamelib.c gamelib_cpu: AVX2 where there is one, SSE4.2 + AVX on Ivy Bridge, ...).
++name: Windows build
++on:
++  workflow_dispatch:
++    inputs:
++      publish:
++        description: Also publish it as a GitHub release
++        type: boolean
++        default: true
++  push:
++    tags: ['v*']
++permissions:
++  contents: write
++jobs:
++  windows:
++    runs-on: windows-latest
++    timeout-minutes: 180
++    defaults:
++      run:
++        shell: msys2 {0}
++    steps:
++      - name: LF line endings (the bash tools break with CRLF)
++        shell: pwsh
++        run: |
++          git config --global core.autocrlf false
++          git config --global core.eol lf
++      - uses: actions/checkout@v4
++      - uses: actions/setup-python@v5
++        with:
++          python-version: '3.12'
++      - uses: msys2/setup-msys2@v2
++        with:
++          msystem: UCRT64
++          update: true
++          path-type: inherit
++          install: >-
++            make zip unzip
++            mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-sdl3
++            mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-vulkan-devel mingw-w64-ucrt-x86_64-shaderc
++            mingw-w64-ucrt-x86_64-spirv-tools mingw-w64-ucrt-x86_64-pkgconf
++            mingw-w64-ucrt-x86_64-vulkan-memory-allocator mingw-w64-ucrt-x86_64-nasm
++      - name: LGPL FFmpeg (make deps-windows)
++        run: make deps-windows
++      - name: Seed generator and game code generator (PyInstaller)
++        run: |
++          PY="$(cygpath -u "$pythonLocation")/python.exe"
++          make rando-helper RANDO_PY="$PY"
++          make gen-helper RANDO_PY="$PY"
++      - name: Compiler for the start screen (zig)
++        run: tools/fetch_zig.sh
++      - name: Package (make dist)
++        run: |
++          make -j"$(nproc)" dist
++          ls -la build/dist
++          echo "ZIP=$(cd build/dist && ls *.zip | head -1)" >> "$GITHUB_ENV"
++      - uses: actions/upload-artifact@v4
++        with:
++          name: LAS-Recomp-windows
++          path: build/dist/*.zip
++          if-no-files-found: error
++      - name: GitHub release
++        if: startsWith(github.ref, 'refs/tags/') || inputs.publish
++        shell: pwsh
++        env:
++          GH_TOKEN: ${{ github.token }}
++        run: |
++          $tag = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF_NAME } else { "build-$env:GITHUB_RUN_NUMBER" }
++          gh release create $tag "build/dist/$env:ZIP" --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA `
++            --title "LAS Recomp (any x86-64 CPU) $tag" `
++            --notes "Windows build of the $env:GITHUB_REF_NAME branch. The game code is compiled at setup for your own CPU: AVX2 is no longer required (Ivy Bridge / Sandy Bridge / older CPUs get SSE4.2 + AVX or SSE2 code with an exact fast FMA emulation)."
+diff --git a/Makefile b/Makefile
+index 8dba0f9cb..68e62e1ed 100644
+--- a/Makefile
++++ b/Makefile
+@@ -69,7 +69,7 @@ else ifeq ($(PLATFORM),linux)
+ EXE      := $(B)/lasrecomp
+ DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
+ ifeq ($(ARCH),x86_64)
+-GENARCH  ?= -march=x86-64-v3  # as on Windows: AVX2 + FMA for the lifted FP/SIMD code (checked at startup)
++GENARCH  ?= -march=x86-64  # as on Windows (the start screen's build picks this CPU's best level instead)
+ endif
+ GENFLAGS += $(GENARCH) -fPIC
+ OSFLAGS  := -Wno-format  # (%llx for uint64_t, which is unsigned long here: the same size)
+@@ -88,7 +88,8 @@ else
+ EXE      := $(B)/lasrecomp.exe
+ DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
+ OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX
+-GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (simd.h); override for older CPUs
++GENARCH  ?= -march=x86-64  # `make`'s own game code build: any x86-64 CPU; -march=native for this machine's best.
++           # The start screen's build (runtime/gamebuild.c) replaces it with the player's CPU level (gamelib_cpu).
+ GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
+ LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
+             -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared \
+@@ -106,6 +107,10 @@ GAMELIB_LDFLAGS := -shared -fuse-ld=lld $(B)/lasrecomp.dll.a
+ GAMELIB_SHARED := -shared  # (+ the import library: runtime/gamebuild.c)
+ endif
+ 
++# The CPU level the game code needs (runtime/platform: checked at startup, so an older CPU gets a message, not an
++# illegal instruction). -march=x86-64 (SSE2) runs everywhere; x86-64-v2 needs SSE4.2 + POPCNT; v3 / v4 AVX2 + FMA + BMI2.
++GENCPU := $(if $(filter %x86-64-v3 %x86-64-v4 %haswell %znver2 %znver3 %znver4,$(GENARCH)),-DLAS_GENCPU_V3,$(if $(filter %x86-64-v2,$(GENARCH)),-DLAS_GENCPU_V2))
++
+ # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
+ # flags). A library with another id is rebuilt by the start screen, never loaded.
+ GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
+@@ -125,7 +130,7 @@ $(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h
+ 
+ $(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS)
+ 	@mkdir -p $(dir $@)
+-	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
++	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)-make"' -c $< -o $@  # ("-make": built with GENARCH, runtime/gamelib.c)
+ $(B)/rt/gamelib.o: $(GAMELIB_SRCS)
+ $(B)/rt/gamelib.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"'
+ # the start screen's build of it (runtime/gamebuild.c) uses the same flags
+@@ -133,6 +138,9 @@ $(B)/rt/gamebuild.o: $(GAMELIB_SRCS) Makefile
+ $(B)/rt/gamebuild.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"' -DGAMELIB_CFLAGS='"$(strip $(filter-out -Iruntime,$(GENFLAGS)))"' \
+                                 -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"'
+ 
++$(B)/rt/platform/$(PLATFORM).o: Makefile
++$(B)/rt/platform/$(PLATFORM).o: RTFLAGS += $(GENCPU)
++
+ $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
+ 	@mkdir -p $(dir $@)
+ 	$(CC) $(RTFLAGS) -c $< -o $@
+@@ -226,7 +234,7 @@ dmg: app
+ # (RELEASE=1: the log goes to lasrecomp.log next to the exe, fatal errors show a message box). Its DLLs are looked up
+ # with build/deps-win/bin first (the FFmpeg DLL names are the same as MSYS2's GPL ones). vulkan-1.dll is left
+ # out: every Vulkan driver installs the loader in System32. Saves, seeds and game files go next to the exe at run time.
+-# Needs: Windows 10+ x64, a Vulkan 1.3 driver, an AVX2 CPU (GENARCH x86-64-v3; checked at startup).
++# Needs: Windows 10+ x64, a Vulkan 1.3 driver, any x86-64 CPU (the game code is compiled for the player's own CPU).
+ DIST     := build/dist/LAS Recomp
+ WIN_B    := build/win-release
+ deps-windows:
+diff --git a/README.md b/README.md
+index 9635f1e49..98986759b 100644
+--- a/README.md
++++ b/README.md
+@@ -8,6 +8,14 @@
+ > in the controversy in relation to this project. You may simply ignore this project and its code.
+ > As with anything on the internet, you run the code at your own discretion.
+ 
++> [!NOTE]
++> **This fork runs on CPUs without AVX2** (e.g. Ivy Bridge / Sandy Bridge: Core i7-3770, Xeon E5 v2). The game code
++> is compiled at setup for the player's own CPU: AVX2 + FMA where available (as upstream), otherwise the best of
++> SSE4.2 / AVX / F16C / FMA the CPU has (Ivy Bridge: `x86-64-v2+avx+f16c`), down to plain SSE2. Without the FMA
++> instruction, fused multiply-adds use an exact fast emulation (runtime/simd.h `SIMD_FMA`), verified against
++> Unicorn with `tools/test_simd.py` and `tools/test_fma_emu.c`. Windows builds: the "Windows build" workflow
++> (Actions tab) produces the release zip.
++
+ **LAS Recomp** is a static recompilation of *The Legend of Zelda: Link's Awakening* (Nintendo Switch, 2019) into a
+ native Windows, macOS and Linux application.
+ 
+@@ -131,7 +139,7 @@ Python 3.12.
+ 
+ ### Windows
+ 
+-Requirements: Windows 10+ x86-64, a CPU with AVX2 and a GPU with Vulkan 1.3. More detail in
++Requirements: Windows 10+ x86-64 (any x86-64 CPU; AVX2 is not required) and a GPU with Vulkan 1.3. More detail in
+ [docs/BUILD-windows.md](docs/BUILD-windows.md).
+ 
+ 1. One-time setup, in PowerShell from the repo root: `powershell -ExecutionPolicy Bypass -File tools\setup_windows.ps1`.
+@@ -145,7 +153,7 @@ Requirements: Windows 10+ x86-64, a CPU with AVX2 and a GPU with Vulkan 1.3. Mor
+ 
+ ### Linux
+ 
+-Requirements: x86-64 with AVX2 (or aarch64, experimental), a GPU with Vulkan 1.3, clang, SDL 3, FFmpeg, shaderc and
++Requirements: x86-64 (any CPU; AVX2 is not required) or aarch64 (experimental), a GPU with Vulkan 1.3, clang, SDL 3, FFmpeg, shaderc and
+ Vulkan Memory Allocator from your distribution, Python 3.12. Packages, cross builds and details in
+ [docs/linux.md](docs/linux.md).
+ 
+diff --git a/docs/linux.md b/docs/linux.md
+index d74be4890..8f2b54299 100644
+--- a/docs/linux.md
++++ b/docs/linux.md
+@@ -10,7 +10,8 @@ package the release AppImages.
+     ./LAS.Recomp-beta_4-linux-x86_64.AppImage
+ 
+ Needs: a distribution with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, Arch, ...), a Vulkan 1.3 driver
+-(Mesa RADV / ANV / NVK / Turnip / Asahi Honeykrisp, or NVIDIA's), and on x86-64 a CPU with AVX2 (2013 or newer).
++(Mesa RADV / ANV / NVK / Turnip / Asahi Honeykrisp, or NVIDIA's), and any x86-64 CPU (the game code is compiled
++for your CPU at setup: AVX2 where available, otherwise SSE4.2 / AVX or SSE2).
+ The start screen asks for the folder with your own game files and sets them up.
+ 
+ Everything the app writes lives in `~/.local/share/lasrecomp` (`$XDG_DATA_HOME/lasrecomp`): game files (`extracted/`),
+@@ -45,7 +46,8 @@ Run `./build/lasrecomp` from the repo root: with `extracted/` in the starting fo
+ everything (dev mode) instead of `~/.local/share/lasrecomp`.
+ 
+ `ARCH` picks the target, separately from the OS: the generated code differs per arch (aarch64 runs the guest's
+-FP/SIMD as inline asm, like Apple Silicon; x86-64 lowers it to C with `-march=x86-64-v3`, like Windows). `make gen`
++FP/SIMD as inline asm, like Apple Silicon; x86-64 lowers it to C, like Windows: `make`'s
++own build with `GENARCH` (default `-march=x86-64`), the start screen's for the player's CPU). `make gen`
+ passes the matching `--simd`. A cross build (`ARCH=aarch64` on an x86-64 machine, `SYSROOT=<arm64 root filesystem>`)
+ keeps its own `generated-aarch64/` and `build/aarch64/`. Distributions that name shaderc's library
+ `libshaderc_shared.so` need `SHADERC=-lshaderc_shared`.
+diff --git a/runtime/gamebuild.c b/runtime/gamebuild.c
+index 405b5463d..a893ae25a 100644
+--- a/runtime/gamebuild.c
++++ b/runtime/gamebuild.c
+@@ -233,21 +233,27 @@ static void add_unit(Units *us, const char *src, const char *work, const char *s
+     u->bytes = stat(src, &st) == 0 ? (unsigned long long)st.st_size : 0;
+ }
+ 
+-// The flags the game code was built with (GAMELIB_CFLAGS, part of its id). zig cc reads -march=<cpu> with its own CPU
+-// names (x86_64_v3) and takes "-<feature>" off the end, so x86-64-v3 would be CPU "x86": the same CPU as -mcpu there.
++// The flags the game code was built with (GAMELIB_CFLAGS, part of its id), with the instruction set of this machine's
++// CPU in place of the build's -march (gamelib_cpu: x86-64). zig cc takes its own -mcpu=<cpu>+<feature> form.
+ static void add_cflags(Args *a, const Tools *t) {
+     char buf[1024];
+     snprintf(buf, sizeof buf, "%s", GAMELIB_CFLAGS);
++    const GameLibCpu *cpu = gamelib_cpu();
+     for (char *f = strtok(buf, " "); f; f = strtok(NULL, " ")) {
++        if (!strncmp(f, "-march=", 7) && cpu->tag[0]) continue;  // (replaced below)
+         if (t->zig && !strncmp(f, "-march=", 7)) {
+-            char cpu[128];
+-            snprintf(cpu, sizeof cpu, "-mcpu=%s", f + 7);
+-            for (char *c = cpu + 6; *c; c++) if (*c == '-') *c = '_';
+-            add(a, cpu);
++            char m[128];
++            snprintf(m, sizeof m, "-mcpu=%s", f + 7);
++            for (char *c = m + 6; *c; c++) if (*c == '-') *c = '_';
++            add(a, m);
+         } else {
+             add(a, f);
+         }
+     }
++    if (cpu->tag[0]) {
++        if (t->zig) add(a, cpu->zig);
++        else add_split(a, cpu->march);
++    }
+ }
+ 
+ static PlatProc start_compile(const Tools *t, const Unit *u) {
+@@ -257,7 +263,9 @@ static PlatProc start_compile(const Tools *t, const Unit *u) {
+     char inc[1200];
+     snprintf(inc, sizeof inc, "-I%s", t->inc);
+     add(&a, inc);
+-    add(&a, "-DGAMELIB_ID=\"" GAMELIB_ID "\"");
++    char id[200];
++    snprintf(id, sizeof id, "-DGAMELIB_ID=\"%s\"", gamelib_id());
++    add(&a, id);
+     add(&a, "-c");
+     add(&a, u->src);
+     add(&a, "-o");
+@@ -296,8 +304,8 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
+         setenv("ZIG_LOCAL_CACHE_DIR", zc, 1);
+ #endif
+     }
+-    LOG("[gamebuild] generator %s%s%s, compiler %s%s, %d jobs\n", t.gen, t.gen_script[0] ? " " : "", t.gen_script,
+-        t.cc, t.zig ? " cc" : "", o->jobs);
++    LOG("[gamebuild] generator %s%s%s, compiler %s%s, %d jobs, CPU %s\n", t.gen, t.gen_script[0] ? " " : "",
++        t.gen_script, t.cc, t.zig ? " cc" : "", o->jobs, gamelib_cpu()->tag[0] ? gamelib_cpu()->tag : "-");
+ 
+     // 1. the generator, both modules at once; their finished files are compiled while it goes on
+     Gen gens[2] = {{.name = "main"}, {.name = "sdk"}};
+@@ -475,7 +483,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
+         char idp[1100];
+         snprintf(idp, sizeof idp, "%s.id", lib);
+         FILE *f = NULL;
+-        if (rename(tmp, lib) != 0 || !(f = fopen(idp, "wb")) || fprintf(f, "%s\n", GAMELIB_ID) < 0) {
++        if (rename(tmp, lib) != 0 || !(f = fopen(idp, "wb")) || fprintf(f, "%s\n", gamelib_id()) < 0) {
+             snprintf(why, why_size, "the game code couldn't be saved");
+             ok = false;
+         }
+diff --git a/runtime/gamelib.c b/runtime/gamelib.c
+index 5b47c4b3f..5a32c2c8a 100644
+--- a/runtime/gamelib.c
++++ b/runtime/gamelib.c
+@@ -9,6 +9,9 @@
+ #else
+ #include <dlfcn.h>
+ #endif
++#if defined(__x86_64__)
++#include <cpuid.h>
++#endif
+ 
+ #include "paths.h"
+ #include "rt.h"
+@@ -16,6 +19,80 @@
+ static const GameLibTables *g_tables;
+ static char g_error[256];
+ 
++#if defined(__x86_64__)
++// CPUID (the features and whether the OS saves the AVX registers), read directly: no compiler runtime support needed.
++typedef struct { bool sse3, ssse3, sse41, sse42, popcnt, cx16, lahf, avx, f16c, fma, avx2, bmi1, bmi2, lzcnt, movbe; } X86;
++static X86 x86_features(void) {
++    X86 f = {0};
++    unsigned a, b, c, d;
++    __cpuid(0, a, b, c, d);
++    unsigned max = a;
++    if (max < 1) return f;
++    __cpuid(1, a, b, c, d);
++    f.sse3 = c >> 0 & 1, f.ssse3 = c >> 9 & 1, f.cx16 = c >> 13 & 1, f.sse41 = c >> 19 & 1, f.sse42 = c >> 20 & 1;
++    f.movbe = c >> 22 & 1, f.popcnt = c >> 23 & 1;
++    bool fma = c >> 12 & 1, f16c = c >> 29 & 1, avx = c >> 28 & 1, osxsave = c >> 27 & 1;
++    if (avx && osxsave) {
++        unsigned lo, hi;
++        __asm__ volatile(".byte 0x0f, 0x01, 0xd0" : "=a"(lo), "=d"(hi) : "c"(0));  // xgetbv(0)
++        f.avx = (lo & 6) == 6;  // the OS saves XMM and YMM
++    }
++    f.fma = f.avx && fma, f.f16c = f.avx && f16c;
++    if (max >= 7) {
++        __cpuid_count(7, 0, a, b, c, d);
++        f.avx2 = f.avx && (b >> 5 & 1), f.bmi1 = b >> 3 & 1, f.bmi2 = b >> 8 & 1;
++    }
++    __cpuid(0x80000000, a, b, c, d);
++    if (a >= 0x80000001) {
++        __cpuid(0x80000001, a, b, c, d);
++        f.lahf = c & 1, f.lzcnt = c >> 5 & 1;
++    }
++    return f;
++}
++#endif
++
++const GameLibCpu *gamelib_cpu(void) {
++    static GameLibCpu c;
++    static bool done;
++    if (done) return &c;
++    done = true;
++#if defined(__x86_64__)
++    X86 f = x86_features();
++    bool v2 = f.sse3 && f.ssse3 && f.sse41 && f.sse42 && f.popcnt && f.cx16 && f.lahf;
++    bool v3 = v2 && f.avx && f.avx2 && f.bmi1 && f.bmi2 && f.f16c && f.fma && f.lzcnt && f.movbe;
++    int level = v3 ? 3 : v2 ? 2 : 1;
++    snprintf(c.tag, sizeof c.tag, "%s", level == 3 ? "x86-64-v3" : level == 2 ? "x86-64-v2" : "x86-64");
++    snprintf(c.march, sizeof c.march, "-march=%s", c.tag);
++    snprintf(c.zig, sizeof c.zig, "-mcpu=%s", level == 3 ? "x86_64_v3" : level == 2 ? "x86_64_v2" : "x86_64");
++    // what the level lacks but this CPU has (Sandy / Ivy Bridge: AVX, F16C; Piledriver: + FMA; Penryn: SSE4.1)
++    const struct { bool has; const char *name, *flag, *zig; int upto; } extra[] = {
++        {f.sse3, "sse3", "-msse3", "sse3", 1},    {f.ssse3, "ssse3", "-mssse3", "ssse3", 1},
++        {f.sse41, "sse4.1", "-msse4.1", "sse4_1", 1}, {f.avx, "avx", "-mavx", "avx", 2},
++        {f.f16c, "f16c", "-mf16c", "f16c", 2},    {f.fma, "fma", "-mfma", "fma", 2},
++    };
++    for (size_t i = 0; i < sizeof extra / sizeof *extra; i++) {
++        if (!extra[i].has || level > extra[i].upto) continue;
++        size_t n = strlen(c.tag), m = strlen(c.march), z = strlen(c.zig);
++        snprintf(c.tag + n, sizeof c.tag - n, "+%s", extra[i].name);
++        snprintf(c.march + m, sizeof c.march - m, " %s", extra[i].flag);
++        snprintf(c.zig + z, sizeof c.zig - z, "+%s", extra[i].zig);
++    }
++#endif
++    return &c;
++}
++
++const char *gamelib_id(void) {
++    static char id[160];
++    if (!id[0]) {
++        const GameLibCpu *c = gamelib_cpu();
++        snprintf(id, sizeof id, "%s%s%s", GAMELIB_ID, c->tag[0] ? "-" : "", c->tag);
++    }
++    return id;
++}
++
++// Built for this machine (gamelib_id), or by `make` (its flags, GENARCH, are the developer's: "-make").
++static bool id_ok(const char *id) { return !strcmp(id, gamelib_id()) || !strcmp(id, GAMELIB_ID "-make"); }
++
+ // The library's id file (<library>.id, written next to it by the build): its GAMELIB_ID, read without loading it.
+ static bool id_matches(const char *lib) {
+     char path[1100], id[128] = {0};
+@@ -25,7 +102,7 @@ static bool id_matches(const char *lib) {
+     size_t n = fread(id, 1, sizeof id - 1, f);
+     fclose(f);
+     while (n && (id[n - 1] == '\n' || id[n - 1] == '\r')) id[--n] = 0;
+-    return !strcmp(id, GAMELIB_ID);
++    return id_ok(id);
+ }
+ 
+ static bool exists(const char *p) {
+@@ -67,7 +144,7 @@ static const GameLibTables *open_lib(const char *path) {
+ #endif
+     if (!entry) { snprintf(g_error, sizeof g_error, "%s: not game code", path); return NULL; }
+     const GameLibTables *t = entry();
+-    if (!t || t->abi != GAMELIB_ABI || !t->id || strcmp(t->id, GAMELIB_ID)) {
++    if (!t || t->abi != GAMELIB_ABI || !t->id || !id_ok(t->id)) {
+         snprintf(g_error, sizeof g_error, "%s was built for another version", path);
+         return NULL;  // (left loaded: nothing of it runs)
+     }
+@@ -90,7 +167,7 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
+                 continue;
+             }
+             g_tables = open_lib(c[i]);
+-            if (g_tables) LOG("[gamelib] %s (%llu + %llu functions)\n", c[i], (unsigned long long)*g_tables->main_count,
++            if (g_tables) LOG("[gamelib] %s (%s, %llu + %llu functions)\n", c[i], g_tables->id, (unsigned long long)*g_tables->main_count,
+                               (unsigned long long)*g_tables->sdk_count);
+         }
+     }
+diff --git a/runtime/gamelib.h b/runtime/gamelib.h
+index 4cd960e46..4dc216377 100644
+--- a/runtime/gamelib.h
++++ b/runtime/gamelib.h
+@@ -50,6 +50,19 @@ const GameLibTables *gamelib_tables(void);
+ // True when a library usable with this build is in one of those places (without loading it).
+ bool gamelib_present(const char *game_dir);
+ 
++// The CPU the game code is compiled for on this machine (x86-64; elsewhere "" and no flags). The start screen's build
++// detects the best instruction set this CPU has (x86-64-v3 = AVX2 + FMA where there is one; otherwise SSE4.2 / SSE2
++// plus AVX, F16C, FMA when present, e.g. "x86-64-v2+avx+f16c" on Ivy Bridge) and the id says which, so moving the
++// game folder to another CPU rebuilds it instead of crashing. march: clang flags; zig: zig cc's -mcpu flag.
++typedef struct {
++    char tag[64];     // "" or e.g. "x86-64-v2+avx+f16c"
++    char march[128];  // "" or e.g. "-march=x86-64-v2 -mavx -mf16c"
++    char zig[128];    // "" or e.g. "-mcpu=x86_64_v2+avx+f16c"
++} GameLibCpu;
++const GameLibCpu *gamelib_cpu(void);
++// GAMELIB_ID plus the CPU tag: the id of a library built here by the start screen.
++const char *gamelib_id(void);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
+index c83b9ffca..66e8d67e7 100644
+--- a/runtime/platform/linux.c
++++ b/runtime/platform/linux.c
+@@ -100,14 +100,22 @@ static void log_to_file_without_terminal(void) {
+ }
+ 
+ #if defined(__x86_64__)
+-// The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2): say so instead of crashing
+-// with an illegal instruction on an older CPU.
++// A game code library built by `make` uses GENARCH (-> GENCPU): when that asks for more than SSE2, say so instead of
++// crashing with an illegal instruction. The start screen's build targets this machine's own CPU (gamelib_cpu).
+ static void require_cpu(void) {
++#if defined(LAS_GENCPU_V3)
+     __builtin_cpu_init();
+     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
+-    fprintf(stderr, "FATAL: LAS Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or "
+-                    "newer).\n");
++    fprintf(stderr, "FATAL: this build of LAS Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator "
++                    "/ Zen or newer). Rebuild with the default GENARCH (SSE2) for an older CPU.\n");
+     exit(1);
++#elif defined(LAS_GENCPU_V2)
++    __builtin_cpu_init();
++    if (__builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt")) return;
++    fprintf(stderr, "FATAL: this build of LAS Recomp needs a CPU with SSE4.2 (Intel Nehalem / 2008 or newer, AMD "
++                    "Bulldozer or newer). Rebuild with the default GENARCH (SSE2) for an older CPU.\n");
++    exit(1);
++#endif
+ }
+ #else
+ static void require_cpu(void) {}
+diff --git a/runtime/platform/windows.c b/runtime/platform/windows.c
+index eb921b1e4..dedffcde3 100644
+--- a/runtime/platform/windows.c
++++ b/runtime/platform/windows.c
+@@ -138,14 +138,24 @@ static void log_to_file_without_console(void) {
+     _putenv("LASRECOMP_LOG_APPEND=1");
+ }
+ 
+-// The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2): say so instead of crashing
+-// with an illegal instruction on an older CPU.
++// A game code library built by `make` uses GENARCH (-> GENCPU): when that asks for more than SSE2, say so instead of
++// crashing with an illegal instruction. The start screen's build targets this machine's own CPU (gamelib_cpu).
+ static void require_cpu(void) {
++#if defined(LAS_GENCPU_V3)
+     __builtin_cpu_init();
+     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
+-    MessageBoxA(NULL, "LAS Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer).",
++    MessageBoxA(NULL, "This build of LAS Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen "
++                      "or newer). Use the SSE2 build for an older CPU.",
+                 "LAS Recomp", MB_ICONERROR | MB_OK);
+     ExitProcess(1);
++#elif defined(LAS_GENCPU_V2)
++    __builtin_cpu_init();
++    if (__builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt")) return;
++    MessageBoxA(NULL, "This build of LAS Recomp needs a CPU with SSE4.2 (Intel Nehalem / 2008 or newer, AMD Bulldozer or "
++                      "newer). Use the SSE2 build for an older CPU.",
++                "LAS Recomp", MB_ICONERROR | MB_OK);
++    ExitProcess(1);
++#endif
+ }
+ 
+ // Fatal error (rt_fatal_trace): the last FATAL / exception line of the log in a message box, when there is no console.
+diff --git a/runtime/simd.h b/runtime/simd.h
+index 4e0dc6d32..f888e7c32 100644
+--- a/runtime/simd.h
++++ b/runtime/simd.h
+@@ -5,7 +5,7 @@
+ // for arithmetic / conversions / FRINTX/I, saturating FP->int conversions, fused multiply-add, ARM estimate
+ // tables. Not modelled: FPSR cumulative exception bits and QC, FPCR trap enables, FP16 arithmetic (ARMv8.2).
+ // FPCR.AHP is honoured by the half-precision conversions. Host assumptions: IEEE binary32/64, MXCSR (or the
+-// host FPU) in round-to-nearest with denormals enabled; fma must be correctly rounded (build x86 with -mfma).
++// host FPU) in round-to-nearest with denormals enabled; fma: SIMD_FMA (the instruction, or an exact emulation).
+ #pragma once
+ #include <fenv.h>
+ #include <math.h>
+@@ -209,6 +209,53 @@ SI int simd_fe_mode(uint64_t fpcr) {
+     return m[(fpcr >> 22) & 3];
+ }
+ 
++// ---- fused multiply-add. With the FMA instruction (x86 -mfma, AArch64) it is one instruction. Without it (x86 CPUs
++// older than Haswell / Piledriver) a single-precision fma is still exact and fast: the product of two floats is exact
++// in double, so a*b + c rounded once to double and then to float is the correctly rounded result, except when the
++// double lands exactly on a float rounding midpoint (double rounding: low 29 bits 1000...0) or in the float subnormal
++// range. Those rare lanes (and doubles) take libm's correctly rounded fma. Directed rounding modes compose exactly
++// (round twice toward the same side = round once), so the FPCR RMode slow paths stay correct too.
++#if (defined(__x86_64__) || defined(__i386__)) && !defined(__FMA__)
++typedef double simd_vd4 __attribute__((vector_size(32)));
++typedef int64_t simd_vs4 __attribute__((vector_size(32)));
++SI int simd_fmaf_hard(double s) {  // s needs the exact path (midpoint, or a nonzero float-subnormal result)
++    uint64_t u;
++    memcpy(&u, &s, sizeof u);
++    uint64_t m = u & 0x7fffffffffffffffull;
++    return (u & 0x1fffffffull) == 0x10000000ull || (m - 1 < 0x3810000000000000ull - 1);  // 0 < |s| < 2^-126
++}
++SN float simd_fmaf_exact(float a, float b, float c) { return fmaf(a, b, c); }
++SI float simd_fmaf(float a, float b, float c) {
++    double s = (double)a * (double)b + (double)c;
++    if (__builtin_expect(simd_fmaf_hard(s), 0)) return simd_fmaf_exact(a, b, c);
++    return (float)s;
++}
++SN vf32 simd_vfmaf_exact(vf32 a, vf32 b, vf32 c, vf32 r, vs32 bad) {
++    for (int i = 0; i < 4; i++)
++        if (bad[i]) r[i] = fmaf(a[i], b[i], c[i]);
++    return r;
++}
++SI vf32 simd_vfmaf(vf32 a, vf32 b, vf32 c) {
++    simd_vd4 s = __builtin_convertvector(a, simd_vd4) * __builtin_convertvector(b, simd_vd4) +
++                 __builtin_convertvector(c, simd_vd4);
++    simd_vd4 m = __builtin_elementwise_abs(s);
++    simd_vs4 tiny = (m < 0x1p-126) & (m > 0);  // (vector compares)
++    typedef uint32_t vu32x8 __attribute__((vector_size(32)));
++    vu32x8 h;
++    memcpy(&h, &s, sizeof h);
++    vu32 lo = __builtin_shufflevector(h, h, 0, 2, 4, 6);  // each lane's low 32 bits
++    vs32 bad = (vs32)((lo & 0x1fffffffu) == 0x10000000u) | __builtin_convertvector(tiny, vs32);
++    vf32 r = __builtin_convertvector(s, vf32);
++    if (__builtin_expect(__builtin_reduce_or(bad) != 0, 0)) r = simd_vfmaf_exact(a, b, c, r, bad);
++    return r;
++}
++SI vf64 simd_vfmad(vf64 a, vf64 b, vf64 c) { return (vf64){fma(a[0], b[0], c[0]), fma(a[1], b[1], c[1])}; }
++#define SIMD_FMA(a, b, c)                                                                                            \
++    _Generic((a), float: simd_fmaf, vf32: simd_vfmaf, double: fma, vf64: simd_vfmad)(a, b, c)
++#else
++#define SIMD_FMA(a, b, c) __builtin_elementwise_fma(a, b, c)
++#endif
++
+ #define F s
+ #define T float
+ #define U uint32_t
+diff --git a/runtime/simd_fp.h b/runtime/simd_fp.h
+index b6a408b2a..56b8494eb 100644
+--- a/runtime/simd_fp.h
++++ b/runtime/simd_fp.h
+@@ -58,9 +58,9 @@ SN T FN(nan3)(Cpu *c, T a, T b, T d) {
+    : (op) == FOP_MUL || (op) == FOP_MULX ? (a) * (b) : (op) == FOP_NMUL ? -((a) * (b))              \
+    : (op) == FOP_DIV ? (a) / (b) : (op) == FOP_ABD ? __builtin_elementwise_abs((a) - (b))          \
+    : (op) == FOP_SQRT ? __builtin_elementwise_sqrt(a)                                              \
+-   : (op) == FOP_MADD ? __builtin_elementwise_fma(b, d, a)                                         \
+-   : (op) == FOP_RECPS ? __builtin_elementwise_fma(a, b, KK(2))                                    \
+-   : (op) == FOP_RSQRTS ? __builtin_elementwise_fma(a, b, KK(3)) * KK(0.5) : (a))
++   : (op) == FOP_MADD ? SIMD_FMA(b, d, a)                                         \
++   : (op) == FOP_RECPS ? SIMD_FMA(a, b, KK(2))                                    \
++   : (op) == FOP_RSQRTS ? SIMD_FMA(a, b, KK(3)) * KK(0.5) : (a))
+ 
+ // Lanes whose fast result needs fixing: NaN results (NaN operand or invalid op), RSQRTS overflow.
+ #define FBAD(op, r) ((op) == FOP_RSQRTS ? ((r) != (r)) | (__builtin_elementwise_abs(r) == K(INFINITY)) : (r) != (r))
+@@ -68,9 +68,9 @@ SN T FN(nan3)(Cpu *c, T a, T b, T d) {
+ // (3 + a*b) / 2 with one rounding (a already negated): halve a normal operand first, so a product beyond
+ // the format's range (which the fast path rounds to inf, or to the largest normal when rounding down) is exact.
+ SN T FN(rsqrts)(T a, T b) {
+-    if (__builtin_elementwise_abs(a) >= FN(fv)(2 * MINN)) return __builtin_elementwise_fma(a * K(0.5), b, K(1.5));
+-    if (__builtin_elementwise_abs(b) >= FN(fv)(2 * MINN)) return __builtin_elementwise_fma(a, b * K(0.5), K(1.5));
+-    return __builtin_elementwise_fma(a, b, K(3)) * K(0.5);
++    if (__builtin_elementwise_abs(a) >= FN(fv)(2 * MINN)) return SIMD_FMA(a * K(0.5), b, K(1.5));
++    if (__builtin_elementwise_abs(b) >= FN(fv)(2 * MINN)) return SIMD_FMA(a, b * K(0.5), K(1.5));
++    return SIMD_FMA(a, b, K(3)) * K(0.5);
+ }
+ 
+ // ARM result for a lane flagged by FBAD (operands already flushed).
+diff --git a/tools/test_fma_emu.c b/tools/test_fma_emu.c
+new file mode 100644
+index 000000000..b53f119ed
+--- /dev/null
++++ b/tools/test_fma_emu.c
+@@ -0,0 +1,80 @@
++// Stress test of simd.h's fma emulation (SIMD_FMA without the FMA instruction) against libm's correctly rounded fmaf,
++// in all four rounding modes: random operands, values built to land on float rounding midpoints after the double
++// sum (the double-rounding cases), subnormal / overflow edges. Then a throughput comparison.
++// Build: clang -O1 -march=x86-64-v2 -mavx -mf16c -Iruntime tools/test_fma_emu.c -o build/test_fma_emu -lm
++#include <stdio.h>
++#include <time.h>
++
++#include "cpu.h"
++
++static uint64_t rs = 0x9e3779b97f4a7c15ull;
++static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }
++static float fbits(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
++static uint32_t bitsf(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
++
++static float rnd_float(void) {
++    switch (rnd() % 6) {
++    case 0: return fbits((uint32_t)rnd());                                        // anything (NaN, inf, subnormal)
++    case 1: return fbits(((uint32_t)rnd() & 0x807fffff) | (uint32_t)(rnd() % 20 + 117) << 23);  // near 1
++    case 2: return fbits((uint32_t)rnd() & 0x80ffffff);                          // subnormal / tiny
++    case 3: return fbits(((uint32_t)rnd() & 0x807fffff) | (uint32_t)(rnd() % 4 + 250) << 23);  // near overflow
++    case 4: return (float)(int)(rnd() % 4096) - 2048;                           // small integers
++    default: return fbits(((uint32_t)rnd() & 0x80ffffff) | (uint32_t)(rnd() % 60 + 97) << 23);
++    }
++}
++
++static int same(float a, float b) { return bitsf(a) == bitsf(b) || (a != a && b != b); }
++
++int main(void) {
++    static const int modes[4] = {FE_TONEAREST, FE_UPWARD, FE_DOWNWARD, FE_TOWARDZERO};
++    long fails = 0, n = 0, mids = 0;
++    for (int m = 0; m < 4; m++) {
++        fesetround(modes[m]);
++        for (long i = 0; i < 4000000; i++) {
++            float a = rnd_float(), b = rnd_float(), c;
++            if (i & 1) {  // c chosen so a*b + c sits right at (or a hair off) a float midpoint
++                double p = (double)a * (double)b;
++                float hi = (float)p;
++                double tail = p - (double)hi;
++                c = (float)(-tail + (double)((int)(rnd() % 3) - 1) * (double)fbits(0x00000001u) * 0.5);
++                if (rnd() & 1) c = fbits(bitsf(c) ^ 1);
++            } else {
++                c = rnd_float();
++            }
++            float want = fmaf(a, b, c);
++            float got = simd_fmaf(a, b, c);
++            vf32 va = {a, b, c, a}, vb = {b, a, a, c}, vc = {c, c, b, b};
++            vf32 vg = simd_vfmaf(va, vb, vc);
++            float vw[4] = {fmaf(a, b, c), fmaf(b, a, c), fmaf(c, a, b), fmaf(a, c, b)};
++            int bad = !same(got, want);
++            for (int k = 0; k < 4; k++) bad |= !same(vg[k], vw[k]);
++            double s = (double)a * b + c;
++            uint64_t u; memcpy(&u, &s, 8);
++            mids += (u & 0x1fffffff) == 0x10000000;
++            n++;
++            if (bad && fails++ < 10)
++                printf("mode %d: fma(%a, %a, %a) = %a, emulated %a\n", m, a, b, c, want, got);
++        }
++    }
++    fesetround(FE_TONEAREST);
++    printf("%ld cases (%ld on a double-rounding midpoint), %ld failing\n", n, mids, fails);
++
++    // throughput: 4-lane vector fma, dependent chains
++    enum { N = 1 << 24 };
++    vf32 x = {1.0001f, 0.9999f, 1.5f, -0.75f}, y = {0.999f, 1.001f, 0.5f, 0.25f}, z = {1e-3f, -1e-3f, 0.1f, 0.2f};
++    struct timespec t0, t1;
++    clock_gettime(CLOCK_MONOTONIC, &t0);
++    for (int i = 0; i < N; i++) { x = simd_vfmaf(x, y, z); __asm__ volatile("" : "+x"(x)); }
++    clock_gettime(CLOCK_MONOTONIC, &t1);
++    double emu = ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / N;
++    vf32 x2 = {1.0001f, 0.9999f, 1.5f, -0.75f};
++    clock_gettime(CLOCK_MONOTONIC, &t0);
++    for (int i = 0; i < N; i++) {
++        x2 = (vf32){fmaf(x2[0], y[0], z[0]), fmaf(x2[1], y[1], z[1]), fmaf(x2[2], y[2], z[2]), fmaf(x2[3], y[3], z[3])};
++        __asm__ volatile("" : "+x"(x2));
++    }
++    clock_gettime(CLOCK_MONOTONIC, &t1);
++    double lib = ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / N;
++    printf("4-lane fma: emulated %.2f ns, libm calls %.2f ns (%g %g)\n", emu, lib, (double)x[0], (double)x2[0]);
++    return fails != 0;
++}
+diff --git a/tools/test_simd.py b/tools/test_simd.py
+index da8de5c8c..1555fc617 100644
+--- a/tools/test_simd.py
++++ b/tools/test_simd.py
+@@ -293,7 +293,7 @@ def compile_tests(work, bodies, jobs, cflags):
+         if p.wait():
+             raise SystemExit('compile failed')
+     exe = os.path.join(work, 'harness.exe' if os.name == 'nt' else 'harness')
+-    subprocess.check_call([cc, '-o', exe] + objs)
++    subprocess.check_call([cc, '-o', exe] + objs + ['-lm'])
+     return exe
+ 
+ 
+@@ -414,7 +414,7 @@ def dis(w):
+             f.write(struct.pack('<QQ', int(st), 0))
+     outp = os.path.join(work, 'out.bin')
+     t3 = time.time()
+-    p = subprocess.run([exe] + [os.path.join(work, n) for n in ('code.bin', 'buf.bin', 'cases.bin')] + [outp],
++    p = subprocess.run(os.environ.get('LAS_TEST_WRAP', '').split() + [exe] + [os.path.join(work, n) for n in ('code.bin', 'buf.bin', 'cases.bin')] + [outp],
+                        capture_output=True)
+     if p.returncode:
+         print('harness failed', p.returncode, p.stderr.decode()[-2000:])
+diff --git a/tools/test_simd_harness.c b/tools/test_simd_harness.c
+index 24182c41e..982d69e06 100644
+--- a/tools/test_simd_harness.c
++++ b/tools/test_simd_harness.c
+@@ -23,7 +23,7 @@ void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) { (void)c; (void)imm; (void)pc; a
+ void rt_udf(Cpu *c, uint64_t pc) { (void)c; (void)pc; abort(); }
+ uint64_t rt_ticks(void) { return 0; }
+ volatile int g_fnprof;
+-void fnprof_hit(uint64_t addr) { (void)addr; }
++void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)addr; (void)lr; (void)x0; }
+ 
+ static void *map_at(uint64_t addr, size_t len) {
+ #ifdef _WIN32
+diff --git a/tools/zig_slim.sh b/tools/zig_slim.sh
+index a86a333f6..f7041e0cd 100755
+--- a/tools/zig_slim.sh
++++ b/tools/zig_slim.sh
+@@ -35,11 +35,13 @@ cp $Z/zig.exe $Z/LICENSE $O/
+ cp $Z/lib/std/std.zig $O/lib/std/
+ 
+ # 2. the runtime: a probe DLL importing from the exe, linked the way the full zig does it (-v: its lld-link line)
++# (-mcpu=x86_64: the runtime libraries built here are linked into every player's game code, whatever their CPU; zig's
++# default would be this build machine's own CPU, e.g. AVX2 / AVX-512 instructions that crash older CPUs)
+ printf 'LIBRARY lasrecomp.exe\nEXPORTS\nprobe_host\n' > $W/host.def
+ printf 'void probe_host(void);\n__declspec(dllexport) void probe(void) { probe_host(); }\n' > $W/dll.c
+ ZA=$PWD/$Z/zig.exe
+-(cd $W && $ZA dlltool -d host.def -l host.a -m i386:x86-64 && $ZA cc "${flags[@]}" -c dll.c -o dll.o &&
+-    $ZA cc -shared -o probe.dll dll.o host.a -v 2> link.log) || { echo "tools/zig_slim.sh: probe link failed ($W/link.log)"; exit 1; }
++(cd $W && $ZA dlltool -d host.def -l host.a -m i386:x86-64 && $ZA cc -mcpu=x86_64 -c dll.c -o dll.o &&
++    $ZA cc -mcpu=x86_64 -shared -o probe.dll dll.o host.a -v 2> link.log) || { echo "tools/zig_slim.sh: probe link failed ($W/link.log)"; exit 1; }
+ line=$(grep '^lld-link ' $W/link.log | tail -1 | tr -d '\r')
+ [ -n "$line" ] || { echo "tools/zig_slim.sh: no lld-link line in $W/link.log"; exit 1; }
+ : > $O/rt/link.rsp
+

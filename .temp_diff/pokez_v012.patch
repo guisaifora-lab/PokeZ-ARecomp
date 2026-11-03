@@ -1,0 +1,366 @@
+diff --git a/Makefile b/Makefile
+index 8ef425c83..8e511f047 100644
+--- a/Makefile
++++ b/Makefile
+@@ -201,7 +201,7 @@ gen-objs: $(GEN_OBJ)
+ # Runtime objects only (no generated code, no link): quick compile check
+ runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
+ 
+-$(B)/rt/platform/windows_rc.o: runtime/platform/windows.rc docs/icon/icon.ico
++$(B)/rt/platform/windows_rc.o: runtime/platform/windows.rc runtime/platform/windows.manifest docs/icon/icon.ico
+ 	@mkdir -p $(dir $@)
+ 	$(WINDRES) -I docs/icon -O coff $< -o $@
+ 
+diff --git a/README.md b/README.md
+index 9bc7e9c30..247e64506 100644
+--- a/README.md
++++ b/README.md
+@@ -44,7 +44,7 @@ Known issues:
+ 
+ ## Playing
+ 
+-Requirements: Windows 10/11 64-bit, a CPU with AVX2, a GPU with Vulkan 1.3 and an up-to-date driver, ~12 GB free.
++Requirements: Windows 10 (1903+) / 11 64-bit, a CPU from 2013 or newer with AVX2 (older ones with SSE4.2, e.g. 2nd/3rd gen Core i5, also work but run the game slower), a GPU with Vulkan 1.3 and an up-to-date driver, ~12 GB free.
+ 
+ What you need from your own console (none of it is included):
+ - **The game**: your dump of Pokémon Legends: Z-A - the base game (`.xci` or `.nsp`), optionally the **2.0.0 update**
+diff --git a/README.pt-BR.md b/README.pt-BR.md
+index 69c921f3f..b67739342 100644
+--- a/README.pt-BR.md
++++ b/README.pt-BR.md
+@@ -45,7 +45,7 @@ Problemas conhecidos:
+ 
+ ## Como jogar
+ 
+-Requisitos: Windows 10/11 64 bits, um processador com AVX2, uma GPU com Vulkan 1.3 e driver atualizado, ~12 GB livres.
++Requisitos: Windows 10 (1903+) / 11 64 bits, um processador de 2013 ou mais novo com AVX2 (os mais antigos com SSE4.2, como Core i5 de 2ª/3ª geração, também funcionam, mas o jogo roda mais devagar), uma GPU com Vulkan 1.3 e driver atualizado, ~12 GB livres.
+ 
+ O que você precisa do seu próprio console (nada disso vem incluído):
+ - **O jogo**: o seu dump de Pokémon Legends: Z-A - o jogo base (`.xci` ou `.nsp`) e, se quiser, a **atualização 2.0.0**
+diff --git a/runtime/gamebuild.c b/runtime/gamebuild.c
+index f3a71e9d7..0aad993b0 100644
+--- a/runtime/gamebuild.c
++++ b/runtime/gamebuild.c
+@@ -142,7 +142,9 @@ static bool find_tools(Tools *t) {
+ #ifdef _WIN32
+     if (!rt_resource("lasrecomp.dll.a", "build/lasrecomp.dll.a", t->implib, sizeof t->implib)) return false;
+     t->zig_rt[0] = 0;
+-    if (t->zig && rt_resource("zig" SEP "rt" SEP "link.rsp", NULL, t->zig_rt, sizeof t->zig_rt)) {
++    // (zig/rt-v2: the same runtime built for x86-64-v2, for gamelib_old_cpu)
++    const char *rsp = gamelib_old_cpu() ? "zig" SEP "rt-v2" SEP "link.rsp" : "zig" SEP "rt" SEP "link.rsp";
++    if (t->zig && rt_resource(rsp, NULL, t->zig_rt, sizeof t->zig_rt)) {
+         char *s = strrchr(t->zig_rt, '/'), *b = strrchr(t->zig_rt, '\\');
+         if (b > s) s = b;
+         if (s) *s = 0;
+@@ -235,10 +237,13 @@ static void add_unit(Units *us, const char *src, const char *work, const char *s
+ 
+ // The flags the game code was built with (GAMELIB_CFLAGS, part of its id). zig cc reads -march=<cpu> with its own CPU
+ // names (x86_64_v3) and takes "-<feature>" off the end, so x86-64-v3 would be CPU "x86": the same CPU as -mcpu there.
++// A CPU without AVX2 / FMA / BMI2 (gamelib_old_cpu) gets x86-64-v2: the same results (tools/test_simd.py), the fused
++// multiply-adds done by the C library - slower.
+ static void add_cflags(Args *a, const Tools *t) {
+     char buf[1024];
+     snprintf(buf, sizeof buf, "%s", GAMELIB_CFLAGS);
+     for (char *f = strtok(buf, " "); f; f = strtok(NULL, " ")) {
++        if (!strcmp(f, "-march=x86-64-v3") && gamelib_old_cpu()) f = (char *)"-march=x86-64-v2";
+         if (t->zig && !strncmp(f, "-march=", 7)) {
+             char cpu[128];
+             snprintf(cpu, sizeof cpu, "-mcpu=%s", f + 7);
+@@ -257,7 +262,9 @@ static PlatProc start_compile(const Tools *t, const Unit *u) {
+     char inc[1200];
+     snprintf(inc, sizeof inc, "-I%s", t->inc);
+     add(&a, inc);
+-    add(&a, "-DGAMELIB_ID=\"" GAMELIB_ID "\"");
++    char id[200];
++    snprintf(id, sizeof id, "-DGAMELIB_ID=\"%s\"", gamelib_id());
++    add(&a, id);
+     add(&a, "-c");
+     add(&a, u->src);
+     add(&a, "-o");
+@@ -298,6 +305,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
+     }
+     LOG("[gamebuild] generator %s%s%s, compiler %s%s, %d jobs\n", t.gen, t.gen_script[0] ? " " : "", t.gen_script,
+         t.cc, t.zig ? " cc" : "", o->jobs);
++    if (gamelib_old_cpu()) LOG("[gamebuild] CPU without AVX2 / FMA / BMI2: built for x86-64-v2\n");
+ 
+     // 1. the generator, both modules at once; their finished files are compiled while it goes on
+     Gen gens[2] = {{.name = "main"}, {.name = "sdk"}};
+@@ -476,7 +484,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
+         char idp[1100];
+         snprintf(idp, sizeof idp, "%s.id", lib);
+         FILE *f = NULL;
+-        if (rename(tmp, lib) != 0 || !(f = fopen(idp, "wb")) || fprintf(f, "%s\n", GAMELIB_ID) < 0) {
++        if (rename(tmp, lib) != 0 || !(f = fopen(idp, "wb")) || fprintf(f, "%s\n", gamelib_id()) < 0) {
+             snprintf(why, why_size, "the game code couldn't be saved");
+             ok = false;
+         }
+diff --git a/runtime/gamelib.c b/runtime/gamelib.c
+index 5b47c4b3f..27f47f3a2 100644
+--- a/runtime/gamelib.c
++++ b/runtime/gamelib.c
+@@ -16,6 +16,19 @@
+ static const GameLibTables *g_tables;
+ static char g_error[256];
+ 
++bool gamelib_old_cpu(void) {
++#if defined(__x86_64__)
++    const char *e = getenv("LARECOMP_OLD_CPU");  // (testing it on a newer CPU)
++    if (e && *e == '1') return true;
++    __builtin_cpu_init();
++    return !(__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2"));
++#else
++    return false;
++#endif
++}
++
++const char *gamelib_id(void) { return gamelib_old_cpu() ? GAMELIB_ID "-v2" : GAMELIB_ID; }
++
+ // The library's id file (<library>.id, written next to it by the build): its GAMELIB_ID, read without loading it.
+ static bool id_matches(const char *lib) {
+     char path[1100], id[128] = {0};
+@@ -25,7 +38,7 @@ static bool id_matches(const char *lib) {
+     size_t n = fread(id, 1, sizeof id - 1, f);
+     fclose(f);
+     while (n && (id[n - 1] == '\n' || id[n - 1] == '\r')) id[--n] = 0;
+-    return !strcmp(id, GAMELIB_ID);
++    return !strcmp(id, gamelib_id());
+ }
+ 
+ static bool exists(const char *p) {
+@@ -67,7 +80,7 @@ static const GameLibTables *open_lib(const char *path) {
+ #endif
+     if (!entry) { snprintf(g_error, sizeof g_error, "%s: not game code", path); return NULL; }
+     const GameLibTables *t = entry();
+-    if (!t || t->abi != GAMELIB_ABI || !t->id || strcmp(t->id, GAMELIB_ID)) {
++    if (!t || t->abi != GAMELIB_ABI || !t->id || strcmp(t->id, gamelib_id())) {
+         snprintf(g_error, sizeof g_error, "%s was built for another version", path);
+         return NULL;  // (left loaded: nothing of it runs)
+     }
+diff --git a/runtime/gamelib.h b/runtime/gamelib.h
+index 4cd960e46..fbd6d9871 100644
+--- a/runtime/gamelib.h
++++ b/runtime/gamelib.h
+@@ -49,6 +49,10 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size);
+ const GameLibTables *gamelib_tables(void);
+ // True when a library usable with this build is in one of those places (without loading it).
+ bool gamelib_present(const char *game_dir);
++// An x86-64 CPU without AVX2 / FMA / BMI2: the game code (x86-64-v3) is built for x86-64-v2 here instead
++// (runtime/gamebuild.c), under its own id. The id a library must have on this machine: GAMELIB_ID, + "-v2" then.
++bool gamelib_old_cpu(void);
++const char *gamelib_id(void);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
+index 70e11b2d0..2fb4ca667 100644
+--- a/runtime/platform/linux.c
++++ b/runtime/platform/linux.c
+@@ -100,13 +100,14 @@ static void log_to_file_without_terminal(void) {
+ }
+ 
+ #if defined(__x86_64__)
+-// The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2): say so instead of crashing
+-// with an illegal instruction on an older CPU.
++// The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2), or on the player's machine for
++// x86-64-v2 when the CPU is older (gamelib_old_cpu): say so instead of crashing with an illegal instruction on a CPU
++// without even that.
+ static void require_cpu(void) {
+     __builtin_cpu_init();
+-    if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
+-    fprintf(stderr, "FATAL: ZA Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or "
+-                    "newer).\n");
++    if (__builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt")) return;
++    fprintf(stderr, "FATAL: ZA Recomp needs a CPU with SSE4.2 (Intel Core i3/i5/i7 / 2008 or newer, AMD Bulldozer / "
++                    "2011 or newer).\n");
+     exit(1);
+ }
+ #else
+diff --git a/runtime/platform/windows.c b/runtime/platform/windows.c
+index 3e04fccfa..9d99a64a2 100644
+--- a/runtime/platform/windows.c
++++ b/runtime/platform/windows.c
+@@ -139,13 +139,14 @@ static void log_to_file_without_console(void) {
+     _putenv("LASRECOMP_LOG_APPEND=1");
+ }
+ 
+-// The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2): say so instead of crashing
+-// with an illegal instruction on an older CPU.
++// The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2), or on the player's machine for
++// x86-64-v2 when the CPU is older (gamelib_old_cpu): say so instead of crashing with an illegal instruction on a CPU
++// without even that.
+ static void require_cpu(void) {
+     __builtin_cpu_init();
+-    if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
+-    MessageBoxA(NULL, "ZA Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer).",
+-                "ZA Recomp", MB_ICONERROR | MB_OK);
++    if (__builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt")) return;
++    MessageBoxA(NULL, "ZA Recomp needs a CPU with SSE4.2 (Intel Core i3/i5/i7 / 2008 or newer, AMD Bulldozer / 2011 or "
++                "newer).", "ZA Recomp", MB_ICONERROR | MB_OK);
+     ExitProcess(1);
+ }
+ 
+diff --git a/runtime/platform/windows.manifest b/runtime/platform/windows.manifest
+new file mode 100644
+index 000000000..f2fff698a
+--- /dev/null
++++ b/runtime/platform/windows.manifest
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
++<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
++  <application xmlns="urn:schemas-microsoft-com:asm.v3">
++    <windowsSettings>
++      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
++    </windowsSettings>
++  </application>
++</assembly>
+diff --git a/runtime/platform/windows.rc b/runtime/platform/windows.rc
+index 56012a43e..08cf66985 100644
+--- a/runtime/platform/windows.rc
++++ b/runtime/platform/windows.rc
+@@ -1,2 +1,6 @@
+ // The .exe's icon (Makefile: windres -I docs/icon). ID 1: Explorer and the taskbar use the first icon resource.
+ 1 ICON "icon.ico"
++// Its manifest: UTF-8 as the process code page (Windows 10 1903+), so the C library's file functions (fopen, stat,
++// opendir) and the -A Windows calls take and give the UTF-8 paths the runtime uses everywhere - a game file or folder
++// named with an accent ("Pokémon") is otherwise "Pok?mon" and not found.
++1 24 "runtime/platform/windows.manifest"
+diff --git a/runtime/ui/launcher.mm b/runtime/ui/launcher.mm
+index 8127fc310..2c6129e7e 100644
+--- a/runtime/ui/launcher.mm
++++ b/runtime/ui/launcher.mm
+@@ -100,7 +100,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
+ static bool build_is_za(const uint8_t id[8]) { return build_version(id) && memcmp(id, BUILD_ID, 8); }
+ // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
+ // it): ZA Recomp's v<major>.<minor>.<patch> (Hexveil404/PokeZ-ARecomp releases).
+-#define LARECOMP_VERSION "v0.1.1"
++#define LARECOMP_VERSION "v0.1.2"
+ 
+ // ------------------------------------------------------------------ update check
+ // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and
+diff --git a/tools/test_simd_harness.c b/tools/test_simd_harness.c
+index 24182c41e..babdd1a1e 100644
+--- a/tools/test_simd_harness.c
++++ b/tools/test_simd_harness.c
+@@ -23,7 +23,7 @@ void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) { (void)c; (void)imm; (void)pc; a
+ void rt_udf(Cpu *c, uint64_t pc) { (void)c; (void)pc; abort(); }
+ uint64_t rt_ticks(void) { return 0; }
+ volatile int g_fnprof;
+-void fnprof_hit(uint64_t addr) { (void)addr; }
++void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)addr, (void)lr, (void)x0; }
+ 
+ static void *map_at(uint64_t addr, size_t len) {
+ #ifdef _WIN32
+diff --git a/tools/zig_slim.sh b/tools/zig_slim.sh
+index a86a333f6..633e0e331 100755
+--- a/tools/zig_slim.sh
++++ b/tools/zig_slim.sh
+@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
+ Z=build/zig O=build/zig-slim W=build/zig-slim-work OA=$PWD/build/zig-slim
+ [ -x $Z/zig.exe ] || { echo "tools/fetch_zig.sh first (the compiler)"; exit 1; }
+ rm -rf $O $W
+-mkdir -p $W/cache $O/lib/std $O/rt
++mkdir -p $W/cache $O/lib/std
+ export ZIG_GLOBAL_CACHE_DIR="$(cygpath -w "$PWD/$W/cache")" ZIG_LOCAL_CACHE_DIR="$(cygpath -w "$PWD/$W/cache")"
+ mkdir -p $W/tmp
+ export TMPDIR="$(cygpath -w "$PWD/$W/tmp")" TMP="$(cygpath -w "$PWD/$W/tmp")" TEMP="$(cygpath -w "$PWD/$W/tmp")"  # (MSYS's /c/... TMPDIR: not for zig)
+@@ -20,13 +20,21 @@ flags=()  # (the game code's flags as gamebuild.c add_cflags passes them to zig)
+ for f in "$@"; do
+     case $f in -march=*) c=${f#-march=}; flags+=("-mcpu=${c//-/_}") ;; *) flags+=("$f") ;; esac
+ done
++# (a CPU without AVX2: the same flags with x86-64-v2, and rt-v2/ - gamebuild.c gamelib_old_cpu)
++v2=()
++for f in "${flags[@]}"; do [ "$f" = -mcpu=x86_64_v3 ] && v2+=(-mcpu=x86_64_v2) || v2+=("$f"); done
++sets=(rt)
++[ "${v2[*]}" != "${flags[*]}" ] && sets+=(rt-v2)
++set_flags() { if [ $1 = rt-v2 ]; then echo "${v2[@]}"; else echo "${flags[@]}"; fi; }
+ 
+ # 1. the headers: what the generated C (cpu.h, simd.h) and tools/gamelib_entry.c include
+ printf '#include "cpu.h"\n#include "simd.h"\n' > $W/probe.c
+-$Z/zig.exe cc "${flags[@]}" -Iruntime -c $W/probe.c -o $W/probe.o -MD -MF $W/probe.d
+-$Z/zig.exe cc "${flags[@]}" -Iruntime '-DGAMELIB_ID="0"' -c tools/gamelib_entry.c -o $W/entry.o -MD -MF $W/entry.d
++for s in "${sets[@]}"; do
++    $Z/zig.exe cc $(set_flags $s) -Iruntime -c $W/probe.c -o $W/probe.o -MD -MF $W/probe-$s.d
++    $Z/zig.exe cc $(set_flags $s) -Iruntime '-DGAMELIB_ID="0"' -c tools/gamelib_entry.c -o $W/entry.o -MD -MF $W/entry-$s.d
++done
+ n=0
+-for h in $(cat $W/probe.d $W/entry.d | tr ' ' '\n' | tr -d '\r' | sed -n 's|^build/zig/lib/|lib/|p' | sort -u); do
++for h in $(cat $W/probe-*.d $W/entry-*.d | tr ' ' '\n' | tr -d '\r' | sed -n 's|^build/zig/lib/|lib/|p' | sort -u); do
+     mkdir -p "$O/$(dirname "$h")"
+     cp "$Z/$h" "$O/$h"
+     n=$((n + 1))
+@@ -34,38 +42,45 @@ done
+ cp $Z/zig.exe $Z/LICENSE $O/
+ cp $Z/lib/std/std.zig $O/lib/std/
+ 
+-# 2. the runtime: a probe DLL importing from the exe, linked the way the full zig does it (-v: its lld-link line)
++# 2. the runtime: a probe DLL importing from the exe, linked the way the full zig does it (-v: its lld-link line), for
++# the game code's CPU (without -mcpu zig builds it for this machine's)
+ printf 'LIBRARY lasrecomp.exe\nEXPORTS\nprobe_host\n' > $W/host.def
+ printf 'void probe_host(void);\n__declspec(dllexport) void probe(void) { probe_host(); }\n' > $W/dll.c
+ ZA=$PWD/$Z/zig.exe
+-(cd $W && $ZA dlltool -d host.def -l host.a -m i386:x86-64 && $ZA cc "${flags[@]}" -c dll.c -o dll.o &&
+-    $ZA cc -shared -o probe.dll dll.o host.a -v 2> link.log) || { echo "tools/zig_slim.sh: probe link failed ($W/link.log)"; exit 1; }
+-line=$(grep '^lld-link ' $W/link.log | tail -1 | tr -d '\r')
+-[ -n "$line" ] || { echo "tools/zig_slim.sh: no lld-link line in $W/link.log"; exit 1; }
+-: > $O/rt/link.rsp
+-for t in $line; do
+-    case $t in
+-        lld-link) ;;
+-        -OUT:*|-PDB:*|-PDBALTPATH:*|-DEBUG|-IMPLIB:*) ;;  # (gamebuild.c: -OUT; no debug info, no import library)
+-        -*) echo "$t" >> $O/rt/link.rsp ;;
+-        *ubsan_rt*) ;;  # (the sanitizer runtime of an unoptimized link: the game code is built with -O1)
+-        *.lib|*.obj)
+-            if [[ $t == *cache* ]]; then  # (paths relative to the folder the probe linked in)
+-                p=$(cygpath -u "$t"); [[ $p == /* ]] || p=$W/$p
+-                cp "$p" $O/rt/
+-                basename "$p" >> $O/rt/link.rsp
+-            fi ;;
+-    esac
++(cd $W && $ZA dlltool -d host.def -l host.a -m i386:x86-64) || { echo "tools/zig_slim.sh: dlltool failed"; exit 1; }
++for s in "${sets[@]}"; do
++    mkdir -p $O/$s
++    (cd $W && $ZA cc $(set_flags $s) -c dll.c -o dll.o && $ZA cc $(set_flags $s) -shared -o probe.dll dll.o host.a -v 2> link-$s.log) ||
++        { echo "tools/zig_slim.sh: probe link failed ($W/link-$s.log)"; exit 1; }
++    line=$(grep '^lld-link ' $W/link-$s.log | tail -1 | tr -d '\r')
++    [ -n "$line" ] || { echo "tools/zig_slim.sh: no lld-link line in $W/link-$s.log"; exit 1; }
++    : > $O/$s/link.rsp
++    for t in $line; do
++        case $t in
++            lld-link) ;;
++            -OUT:*|-PDB:*|-PDBALTPATH:*|-DEBUG|-IMPLIB:*) ;;  # (gamebuild.c: -OUT; no debug info, no import library)
++            -*) echo "$t" >> $O/$s/link.rsp ;;
++            *ubsan_rt*) ;;  # (the sanitizer runtime of an unoptimized link: the game code is built with -O1)
++            *.lib|*.obj)
++                if [[ $t == *cache* ]]; then  # (paths relative to the folder the probe linked in)
++                    p=$(cygpath -u "$t"); [[ $p == /* ]] || p=$W/$p
++                    cp "$p" $O/$s/
++                    basename "$p" >> $O/$s/link.rsp
++                fi ;;
++        esac
++    done
++    echo "-NOIMPLIB" >> $O/$s/link.rsp
+ done
+-echo "-NOIMPLIB" >> $O/rt/link.rsp
+ 
+ # 3. check: the probe again with the slim copy and an empty cache
+-rm -rf $W/cache2
+-export ZIG_GLOBAL_CACHE_DIR="$(cygpath -w "$PWD/$W/cache2")" ZIG_LOCAL_CACHE_DIR="$(cygpath -w "$PWD/$W/cache2")"
+-$O/zig.exe cc "${flags[@]}" -Iruntime -c $W/probe.c -o $W/probe2.o
+-$O/zig.exe cc "${flags[@]}" -Iruntime '-DGAMELIB_ID="0"' -c tools/gamelib_entry.c -o $W/entry2.o
+-(cd $W && "$OA/zig.exe" lld-link "@$(cygpath -w "$OA/rt/link.rsp")" "-LIBPATH:$(cygpath -w "$OA/rt")" \
+-    -OUT:probe2.dll dll.o host.a) || { echo "tools/zig_slim.sh: the slim zig's link failed"; exit 1; }
+-built=$(find $W/cache2 -name '*.lib' | wc -l)
+-[ "$built" = 0 ] || { echo "tools/zig_slim.sh: the slim zig still built $built libraries"; exit 1; }
+-echo "build/zig-slim: $n headers, $(ls $O/rt | wc -l) runtime files, $(find $O -type f | wc -l) files, $(du -sh $O | cut -f1)"
++for s in "${sets[@]}"; do
++    rm -rf $W/cache2
++    export ZIG_GLOBAL_CACHE_DIR="$(cygpath -w "$PWD/$W/cache2")" ZIG_LOCAL_CACHE_DIR="$(cygpath -w "$PWD/$W/cache2")"
++    $O/zig.exe cc $(set_flags $s) -Iruntime -c $W/probe.c -o $W/probe2.o
++    $O/zig.exe cc $(set_flags $s) -Iruntime '-DGAMELIB_ID="0"' -c tools/gamelib_entry.c -o $W/entry2.o
++    (cd $W && $ZA cc $(set_flags $s) -c dll.c -o dll.o && "$OA/zig.exe" lld-link "@$(cygpath -w "$OA/$s/link.rsp")" \
++        "-LIBPATH:$(cygpath -w "$OA/$s")" -OUT:probe2.dll dll.o host.a) || { echo "tools/zig_slim.sh: the slim zig's link failed ($s)"; exit 1; }
++    built=$(find $W/cache2 -name '*.lib' | wc -l)
++    [ "$built" = 0 ] || { echo "tools/zig_slim.sh: the slim zig still built $built libraries ($s)"; exit 1; }
++done
++echo "build/zig-slim: $n headers, $(ls $O/rt | wc -l) runtime files (${sets[*]}), $(find $O -type f | wc -l) files, $(du -sh $O | cut -f1)"
+
