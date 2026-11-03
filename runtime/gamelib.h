@@ -30,9 +30,18 @@
 #define GAMELIB_ABI 1
 #define GAMELIB_FULL_ID_SIZE 96
 
-bool gamelib_old_cpu(void);  // runtime/gamelib.c: no AVX2 / FMA / BMI2 - the game code is built for x86-64-v2
+// CPU instruction set level picked for the game code (runtime/gamelib.c gamelib_cpu).
+typedef struct {
+    char tag[64];     // e.g. "x86-64-v3", "x86-64-v2+avx+f16c", "x86-64"
+    char march[128];  // e.g. "-march=x86-64-v2 -mavx -mf16c"
+    char zig[128];    // e.g. "-mcpu=x86_64_v2+avx+f16c"
+} GameLibCpu;
 
-// The id a library for the game files in game_dir has (GAMELIB_ID[-v2]-<build ID>); false when exefs/main is unreadable.
+const GameLibCpu *gamelib_cpu(void);
+const char *gamelib_id(void);  // GAMELIB_ID[-<tag>]
+bool gamelib_old_cpu(void);
+
+// The id a library for the game files in game_dir has (GAMELIB_ID[-<cpu>]-<build ID>); false when exefs/main is unreadable.
 static inline bool gamelib_full_id(const char *game_dir, char *out, size_t size) {
     char path[1100];
     unsigned char hdr[0x60];
@@ -42,7 +51,7 @@ static inline bool gamelib_full_id(const char *game_dir, char *out, size_t size)
     bool ok = fread(hdr, 1, sizeof hdr, f) == sizeof hdr && !memcmp(hdr, "NSO0", 4);
     fclose(f);
     if (!ok) return false;
-    int n = snprintf(out, size, "%s%s-", GAMELIB_ID, gamelib_old_cpu() ? "-v2" : "");  // (an x86-64-v2 build: its own)
+    int n = snprintf(out, size, "%s-", gamelib_id());
     for (int i = 0; i < 8 && n + 2 < (int)size; i++) n += snprintf(out + n, size - n, "%02X", hdr[0x40 + i]);
     return true;
 }

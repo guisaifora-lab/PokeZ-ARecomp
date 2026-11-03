@@ -214,15 +214,22 @@ static void log_to_file_without_terminal(void) {
 }
 
 #if defined(__x86_64__)
-// The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2), or on the player's machine for
-// x86-64-v2 when the CPU is older (gamelib_old_cpu): say so instead of crashing with an illegal instruction on a CPU
-// without even that.
+// A game code library built by `make` uses GENARCH (-> GENCPU): when that asks for more than SSE2, say so instead of
+// crashing with an illegal instruction. The start screen's build targets this machine's own CPU (gamelib_cpu).
 static void require_cpu(void) {
+#if defined(LAS_GENCPU_V3)
+    __builtin_cpu_init();
+    if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
+    fprintf(stderr, "FATAL: This build of ZA Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator "
+                    "/ Zen or newer). Use the SSE2 build for an older CPU.\n");
+    exit(1);
+#elif defined(LAS_GENCPU_V2)
     __builtin_cpu_init();
     if (__builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt")) return;
-    fprintf(stderr, "FATAL: ZA Recomp needs a CPU with SSE4.2 (Intel Core i3/i5/i7 / 2008 or newer, AMD Bulldozer / "
-                    "2011 or newer).\n");
+    fprintf(stderr, "FATAL: This build of ZA Recomp needs a CPU with SSE4.2 (Intel Nehalem / 2008 or newer, AMD "
+                    "Bulldozer or newer). Use the SSE2 build for an older CPU.\n");
     exit(1);
+#endif
 }
 #else
 static void require_cpu(void) {}

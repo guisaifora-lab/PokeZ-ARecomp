@@ -26,6 +26,14 @@ para *The Legend of Zelda: Link's Awakening*.
 > [!IMPORTANT]
 > **Você precisa da sua própria cópia do jogo.** O ZA Recomp não inclui arquivos, código, assets nem fontes do jogo.
 
+> [!NOTE]
+> **Este fork roda em processadores sem AVX2** (ex: Ivy Bridge / Sandy Bridge: Core i7-3770, Xeon E5 v2, Core i5/i7 antigos).
+> O código do jogo é compilado na configuração inicial para a CPU do jogador: AVX2 + FMA onde disponível, ou o melhor
+> de SSE4.2 / AVX / F16C / FMA suportado pela máquina (Ivy Bridge: `x86-64-v2+avx+f16c`), até SSE2 puro.
+> Sem a instrução de hardware FMA, as operações de fused multiply-add usam uma emulação rápida e exata (`runtime/simd.h` `SIMD_FMA`),
+> verificada com `tools/test_simd.py`, `tools/test_fma_emu.c` e `tools/test_fma_hw.c`.
+> Builds para Windows: o workflow "Windows build" na aba Actions gera o arquivo `.zip` pronto para jogar.
+
 ## Conteúdo
 
 - [Imagens](#imagens)

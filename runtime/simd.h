@@ -5,7 +5,7 @@
 // for arithmetic / conversions / FRINTX/I, saturating FP->int conversions, fused multiply-add, ARM estimate
 // tables. Not modelled: FPSR cumulative exception bits and QC, FPCR trap enables, FP16 arithmetic (ARMv8.2).
 // FPCR.AHP is honoured by the half-precision conversions. Host assumptions: IEEE binary32/64, MXCSR (or the
-// host FPU) in round-to-nearest with denormals enabled; fma must be correctly rounded (build x86 with -mfma).
+// host FPU) in round-to-nearest with denormals enabled; fma: SIMD_FMA (the instruction, or an exact emulation).
 #pragma once
 #include <fenv.h>
 #include <math.h>
@@ -269,6 +269,57 @@ SI void simd_set_host_round(int mode) {
     fesetround(mode);
 #endif
 }
+
+// ---- fused multiply-add. With the FMA instruction (x86 -mfma, AArch64) it is one instruction. Without it (x86 CPUs
+// older than Haswell / Piledriver) a single-precision fma is still exact and fast: the product of two floats is exact
+// in double, so a*b + c rounded once to double and then to float is the correctly rounded result, except when the
+// double lands exactly on a float rounding midpoint (double rounding: low 29 bits 1000...0) or in the float subnormal
+// range: those rare lanes take simd_fmaf_exact. Doubles take libm's fma. Directed rounding modes compose exactly
+// (round twice toward the same side = round once), so the FPCR RMode slow paths stay correct too.
+#if (defined(__x86_64__) || defined(__i386__)) && !defined(__FMA__)
+typedef double simd_vd4 __attribute__((vector_size(32)));
+static inline int simd_fmaf_hard(double s) {  // s needs the exact path (midpoint, or a non-zero float subnormal)
+    union { double d; uint64_t u; } pun = {.d = s};
+    uint64_t m = pun.u & 0x7fffffffffffffffull;
+    return ((pun.u & 0x1fffffffull) == 0x10000000ull) | (m - 1 < 0x3810000000000000ull - 1);  // 0 < |s| < 2^-126
+}
+// The rare lanes, still without libm (it may not honour MXCSR's FTZ / DAZ the way the instruction does): in a directed
+// rounding mode the double result already rounds correctly; in round-to-nearest it's made round-to-odd first (TwoSum
+// gives the exact error), which then rounds to float correctly at any precision, subnormals included.
+SN float simd_fmaf_exact(float a, float b, float c) {
+    double p = (double)a * (double)b, z = (double)c, s = p + z;
+    if (((__builtin_ia32_stmxcsr() >> 13) & 3) != 0 || s != s || s - s != 0) return (float)s;
+    double t = s - p, e = (p - (s - t)) + (z - t);  // s + e == a*b + c exactly
+    union { double d; uint64_t u; } pun = {.d = s};
+    if (e != 0 && !(pun.u & 1)) pun.u += (e > 0) == (s > 0) ? 1 : (uint64_t)-1;
+    return (float)pun.d;
+}
+SI float simd_fmaf(float a, float b, float c) {
+    double s = (double)a * (double)b + (double)c;
+    if (__builtin_expect(simd_fmaf_hard(s), 0)) return simd_fmaf_exact(a, b, c);
+    return (float)s;
+}
+SN vf32 simd_vfmaf_exact(vf32 a, vf32 b, vf32 c, vf32 r, vs32 bad) {
+    for (int i = 0; i < 4; i++)
+        if (bad[i]) r[i] = simd_fmaf_exact(a[i], b[i], c[i]);
+    return r;
+}
+SI vf32 simd_vfmaf(vf32 a, vf32 b, vf32 c) {
+    simd_vd4 p = (simd_vd4){(double)a[0] * (double)b[0], (double)a[1] * (double)b[1],
+                            (double)a[2] * (double)b[2], (double)a[3] * (double)b[3]};
+    simd_vd4 z = (simd_vd4){(double)c[0], (double)c[1], (double)c[2], (double)c[3]};
+    simd_vd4 s = p + z;
+    vf32 r = (vf32){(float)s[0], (float)s[1], (float)s[2], (float)s[3]};
+    vs32 bad = (vs32){simd_fmaf_hard(s[0]), simd_fmaf_hard(s[1]), simd_fmaf_hard(s[2]), simd_fmaf_hard(s[3])};
+    if (__builtin_expect((bad[0] | bad[1]) | (bad[2] | bad[3]), 0)) return simd_vfmaf_exact(a, b, c, r, bad);
+    return r;
+}
+SI vf64 simd_vfmad(vf64 a, vf64 b, vf64 c) { return (vf64){fma(a[0], b[0], c[0]), fma(a[1], b[1], c[1])}; }
+#define SIMD_FMA(a, b, c)                                                                                            \
+    _Generic((a), float: simd_fmaf, vf32: simd_vfmaf, double: fma, vf64: simd_vfmad)(a, b, c)
+#else
+#define SIMD_FMA(a, b, c) __builtin_elementwise_fma(a, b, c)
+#endif
 
 #define F s
 #define T float

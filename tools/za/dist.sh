@@ -8,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
-GENOPT="-O1 -DGUEST_VOLATILE" GENARCH=-march=x86-64-v3  # (the game code's flags: part of the library id)
+GENOPT="-O1 -DGUEST_VOLATILE" GENARCH="${GENARCH:--march=x86-64}"  # (any x86-64 CPU; gamelib_cpu compiles game code for the player's CPU)
 B=build/za-dist D="build/dist-za/ZA Recomp"
 
 # 1. the compiler (Windows' curl: MSYS2's one rejects TLS-inspecting proxies' certificates)

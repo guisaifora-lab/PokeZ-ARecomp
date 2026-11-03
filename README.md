@@ -26,6 +26,14 @@ It is built on **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by Peiikai
 > [!IMPORTANT]
 > **You need your own copy of the game.** ZA Recomp does not include any game files, code, assets or fonts.
 
+> [!NOTE]
+> **This fork runs on CPUs without AVX2** (e.g. Ivy Bridge / Sandy Bridge: Core i7-3770, Xeon E5 v2, older Core i5/i7).
+> The game code is compiled at setup for the player's own CPU: AVX2 + FMA where available (as upstream), otherwise
+> the best of SSE4.2 / AVX / F16C / FMA the CPU has (Ivy Bridge: `x86-64-v2+avx+f16c`), down to plain SSE2.
+> Without the FMA instruction, fused multiply-adds use an exact fast emulation (`runtime/simd.h` `SIMD_FMA`),
+> verified against Unicorn with `tools/test_simd.py`, `tools/test_fma_emu.c` and `tools/test_fma_hw.c`.
+> Windows builds: the "Windows build" workflow (Actions tab) produces the release zip.
+
 ## Contents
 
 - [Screenshots](#screenshots)

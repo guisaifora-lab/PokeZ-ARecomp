@@ -73,7 +73,7 @@ else ifeq ($(PLATFORM),linux)
 EXE      := $(B)/lasrecomp
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
 ifeq ($(ARCH),x86_64)
-GENARCH  ?= -march=x86-64-v3  # as on Windows: AVX2 + FMA for the lifted FP/SIMD code (checked at startup)
+GENARCH  ?= -march=x86-64  # as on Windows (the start screen's build picks this CPU's best level instead)
 endif
 GENFLAGS += $(GENARCH) -fPIC
 OSFLAGS  := -Wno-format  # (%llx for uint64_t, which is unsigned long here: the same size)
@@ -96,7 +96,8 @@ EXE      := $(B)/lasrecomp.exe
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
 OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX \
             $(if $(RELEASE),-DLARECOMP_ZIP_BUILD)  # (the log's [info] line: the release zip)
-GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (simd.h); override for older CPUs
+GENARCH  ?= -march=x86-64  # `make`'s own game code build: any x86-64 CPU; -march=native for this machine's best.
+           # The start screen's build (runtime/gamebuild.c) replaces it with the player's CPU level (gamelib_cpu).
 GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan-1 -lws2_32 -lwinmm -lgdi32 -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared \
@@ -113,6 +114,10 @@ LDFLAGS  += -Wl,--export-all-symbols -Wl,--out-implib,$(B)/lasrecomp.dll.a
 GAMELIB_LDFLAGS := -shared -fuse-ld=lld $(B)/lasrecomp.dll.a
 GAMELIB_SHARED := -shared  # (+ the import library: runtime/gamebuild.c)
 endif
+
+# The CPU level the game code needs (runtime/platform: checked at startup, so an older CPU gets a message, not an
+# illegal instruction). -march=x86-64 (SSE2) runs everywhere; x86-64-v2 needs SSE4.2 + POPCNT; v3 / v4 AVX2 + FMA + BMI2.
+GENCPU := $(if $(filter %x86-64-v3 %x86-64-v4 %haswell %znver2 %znver3 %znver4,$(GENARCH)),-DLAS_GENCPU_V3,$(if $(filter %x86-64-v2,$(GENARCH)),-DLAS_GENCPU_V2))
 
 # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
 # flags). A library with another id is rebuilt by the start screen, never loaded.
@@ -143,7 +148,7 @@ $(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h runtime/simd.h runtime/simd_fp.h
 
 $(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS) $(wildcard $(GEN)/main/main_build_id.txt)
 	@mkdir -p $(dir $@)
-	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_FULL_ID)"' -c $< -o $@
+	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_FULL_ID)-make"' -c $< -o $@
 # (Makefile too: GAMELIB_ID hashes the flags, so a flags change - GENOPT - must rebuild the loader's copy of the id, as
 # it does gamebuild.o's; it didn't, and the start screen's build and the loader disagreed: the old library loaded)
 $(B)/rt/gamelib.o: $(GAMELIB_SRCS) Makefile
@@ -153,6 +158,9 @@ $(B)/rt/gamebuild.o: $(GAMELIB_SRCS) $(GAMELIB_BASE_SRCS) Makefile
 $(B)/rt/gamebuild.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"' -DGAMELIB_BASE_ID='"$(GAMELIB_BASE_ID)"' \
                                 -DGAMELIB_CFLAGS='"$(strip $(filter-out -Iruntime,$(GENFLAGS)))"' \
                                 -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"'
+
+$(B)/rt/platform/$(PLATFORM).o: Makefile
+$(B)/rt/platform/$(PLATFORM).o: RTFLAGS += $(GENCPU)
 
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)

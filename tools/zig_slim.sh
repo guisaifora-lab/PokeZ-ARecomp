@@ -20,21 +20,13 @@ flags=()  # (the game code's flags as gamebuild.c add_cflags passes them to zig)
 for f in "$@"; do
     case $f in -march=*) c=${f#-march=}; flags+=("-mcpu=${c//-/_}") ;; *) flags+=("$f") ;; esac
 done
-# (a CPU without AVX2: the same flags with x86-64-v2, and rt-v2/ - gamebuild.c gamelib_old_cpu)
-v2=()
-for f in "${flags[@]}"; do [ "$f" = -mcpu=x86_64_v3 ] && v2+=(-mcpu=x86_64_v2) || v2+=("$f"); done
-sets=(rt)
-[ "${v2[*]}" != "${flags[*]}" ] && sets+=(rt-v2)
-set_flags() { if [ $1 = rt-v2 ]; then echo "${v2[@]}"; else echo "${flags[@]}"; fi; }
 
 # 1. the headers: what the generated C (cpu.h, simd.h) and tools/gamelib_entry.c include
 printf '#include "cpu.h"\n#include "simd.h"\n' > $W/probe.c
-for s in "${sets[@]}"; do
-    $Z/zig.exe cc $(set_flags $s) -Iruntime -c $W/probe.c -o $W/probe.o -MD -MF $W/probe-$s.d
-    $Z/zig.exe cc $(set_flags $s) -Iruntime '-DGAMELIB_ID="0"' -c tools/gamelib_entry.c -o $W/entry.o -MD -MF $W/entry-$s.d
-done
+$Z/zig.exe cc -mcpu=x86_64 -Iruntime -c $W/probe.c -o $W/probe.o -MD -MF $W/probe.d
+$Z/zig.exe cc -mcpu=x86_64 -Iruntime '-DGAMELIB_ID="0"' -c tools/gamelib_entry.c -o $W/entry.o -MD -MF $W/entry.d
 n=0
-for h in $(cat $W/probe-*.d $W/entry-*.d | tr ' ' '\n' | tr -d '\r' | sed -n 's|^build/zig/lib/|lib/|p' | sort -u); do
+for h in $(cat $W/probe.d $W/entry.d | tr ' ' '\n' | tr -d '\r' | sed -n 's|^build/zig/lib/|lib/|p' | sort -u); do
     mkdir -p "$O/$(dirname "$h")"
     cp "$Z/$h" "$O/$h"
     n=$((n + 1))
@@ -42,45 +34,41 @@ done
 cp $Z/zig.exe $Z/LICENSE $O/
 cp $Z/lib/std/std.zig $O/lib/std/
 
-# 2. the runtime: a probe DLL importing from the exe, linked the way the full zig does it (-v: its lld-link line), for
-# the game code's CPU (without -mcpu zig builds it for this machine's)
+# 2. the runtime: a probe DLL importing from the exe, linked the way the full zig does it (-v: its lld-link line)
+# (-mcpu=x86_64: the runtime libraries built here are linked into every player's game code, whatever their CPU; zig's
+# default would be this build machine's own CPU, e.g. AVX2 / AVX-512 instructions that crash older CPUs)
 printf 'LIBRARY lasrecomp.exe\nEXPORTS\nprobe_host\n' > $W/host.def
 printf 'void probe_host(void);\n__declspec(dllexport) void probe(void) { probe_host(); }\n' > $W/dll.c
 ZA=$PWD/$Z/zig.exe
-(cd $W && $ZA dlltool -d host.def -l host.a -m i386:x86-64) || { echo "tools/zig_slim.sh: dlltool failed"; exit 1; }
-for s in "${sets[@]}"; do
-    mkdir -p $O/$s
-    (cd $W && $ZA cc $(set_flags $s) -c dll.c -o dll.o && $ZA cc $(set_flags $s) -shared -o probe.dll dll.o host.a -v 2> link-$s.log) ||
-        { echo "tools/zig_slim.sh: probe link failed ($W/link-$s.log)"; exit 1; }
-    line=$(grep '^lld-link ' $W/link-$s.log | tail -1 | tr -d '\r')
-    [ -n "$line" ] || { echo "tools/zig_slim.sh: no lld-link line in $W/link-$s.log"; exit 1; }
-    : > $O/$s/link.rsp
-    for t in $line; do
-        case $t in
-            lld-link) ;;
-            -OUT:*|-PDB:*|-PDBALTPATH:*|-DEBUG|-IMPLIB:*) ;;  # (gamebuild.c: -OUT; no debug info, no import library)
-            -*) echo "$t" >> $O/$s/link.rsp ;;
-            *ubsan_rt*) ;;  # (the sanitizer runtime of an unoptimized link: the game code is built with -O1)
-            *.lib|*.obj)
-                if [[ $t == *cache* ]]; then  # (paths relative to the folder the probe linked in)
-                    p=$(cygpath -u "$t"); [[ $p == /* ]] || p=$W/$p
-                    cp "$p" $O/$s/
-                    basename "$p" >> $O/$s/link.rsp
-                fi ;;
-        esac
-    done
-    echo "-NOIMPLIB" >> $O/$s/link.rsp
+(cd $W && $ZA dlltool -d host.def -l host.a -m i386:x86-64 && $ZA cc -mcpu=x86_64 -c dll.c -o dll.o &&
+    $ZA cc -mcpu=x86_64 -shared -o probe.dll dll.o host.a -v 2> link.log) || { echo "tools/zig_slim.sh: probe link failed ($W/link.log)"; exit 1; }
+line=$(grep '^lld-link ' $W/link.log | tail -1 | tr -d '\r')
+[ -n "$line" ] || { echo "tools/zig_slim.sh: no lld-link line in $W/link.log"; exit 1; }
+mkdir -p $O/rt
+: > $O/rt/link.rsp
+for t in $line; do
+    case $t in
+        lld-link) ;;
+        -OUT:*|-PDB:*|-PDBALTPATH:*|-DEBUG|-IMPLIB:*) ;;  # (gamebuild.c: -OUT; no debug info, no import library)
+        -*) echo "$t" >> $O/rt/link.rsp ;;
+        *ubsan_rt*) ;;  # (the sanitizer runtime of an unoptimized link: the game code is built with -O1)
+        *.lib|*.obj)
+            if [[ $t == *cache* ]]; then  # (paths relative to the folder the probe linked in)
+                p=$(cygpath -u "$t"); [[ $p == /* ]] || p=$W/$p
+                cp "$p" $O/rt/
+                basename "$p" >> $O/rt/link.rsp
+            fi ;;
+    esac
 done
+echo "-NOIMPLIB" >> $O/rt/link.rsp
 
 # 3. check: the probe again with the slim copy and an empty cache
-for s in "${sets[@]}"; do
-    rm -rf $W/cache2
-    export ZIG_GLOBAL_CACHE_DIR="$(cygpath -w "$PWD/$W/cache2")" ZIG_LOCAL_CACHE_DIR="$(cygpath -w "$PWD/$W/cache2")"
-    $O/zig.exe cc $(set_flags $s) -Iruntime -c $W/probe.c -o $W/probe2.o
-    $O/zig.exe cc $(set_flags $s) -Iruntime '-DGAMELIB_ID="0"' -c tools/gamelib_entry.c -o $W/entry2.o
-    (cd $W && $ZA cc $(set_flags $s) -c dll.c -o dll.o && "$OA/zig.exe" lld-link "@$(cygpath -w "$OA/$s/link.rsp")" \
-        "-LIBPATH:$(cygpath -w "$OA/$s")" -OUT:probe2.dll dll.o host.a) || { echo "tools/zig_slim.sh: the slim zig's link failed ($s)"; exit 1; }
-    built=$(find $W/cache2 -name '*.lib' | wc -l)
-    [ "$built" = 0 ] || { echo "tools/zig_slim.sh: the slim zig still built $built libraries ($s)"; exit 1; }
-done
-echo "build/zig-slim: $n headers, $(ls $O/rt | wc -l) runtime files (${sets[*]}), $(find $O -type f | wc -l) files, $(du -sh $O | cut -f1)"
+rm -rf $W/cache2
+export ZIG_GLOBAL_CACHE_DIR="$(cygpath -w "$PWD/$W/cache2")" ZIG_LOCAL_CACHE_DIR="$(cygpath -w "$PWD/$W/cache2")"
+$O/zig.exe cc -mcpu=x86_64 -Iruntime -c $W/probe.c -o $W/probe2.o
+$O/zig.exe cc -mcpu=x86_64 -Iruntime '-DGAMELIB_ID="0"' -c tools/gamelib_entry.c -o $W/entry2.o
+(cd $W && $ZA cc -mcpu=x86_64 -c dll.c -o dll.o && "$OA/zig.exe" lld-link "@$(cygpath -w "$OA/rt/link.rsp")" \
+    "-LIBPATH:$(cygpath -w "$OA/rt")" -OUT:probe2.dll dll.o host.a) || { echo "tools/zig_slim.sh: the slim zig's link failed"; exit 1; }
+built=$(find $W/cache2 -name '*.lib' | wc -l)
+[ "$built" = 0 ] || { echo "tools/zig_slim.sh: the slim zig still built $built libraries"; exit 1; }
+echo "build/zig-slim: $n headers, $(ls $O/rt | wc -l) runtime files, $(find $O -type f | wc -l) files, $(du -sh $O | cut -f1)"

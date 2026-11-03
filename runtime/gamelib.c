@@ -9,6 +9,9 @@
 #else
 #include <dlfcn.h>
 #endif
+#if defined(__x86_64__)
+#include <cpuid.h>
+#endif
 
 #include "gamebuild.h"
 #include "paths.h"
@@ -17,15 +20,89 @@
 static const GameLibTables *g_tables;
 static char g_error[256];
 
-bool gamelib_old_cpu(void) {
 #if defined(__x86_64__)
-    const char *e = getenv("LARECOMP_OLD_CPU");  // (testing it on a newer CPU)
-    if (e && *e == '1') return true;
-    __builtin_cpu_init();
-    return !(__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2"));
-#else
-    return false;
+// CPUID (the features and whether the OS saves the AVX registers), read directly: no compiler runtime support needed.
+typedef struct { bool sse3, ssse3, sse41, sse42, popcnt, cx16, lahf, avx, f16c, fma, avx2, bmi1, bmi2, lzcnt, movbe; } X86;
+static X86 x86_features(void) {
+    X86 f = {0};
+    unsigned a, b, c, d;
+    __cpuid(0, a, b, c, d);
+    unsigned max = a;
+    if (max < 1) return f;
+    __cpuid(1, a, b, c, d);
+    f.sse3 = c >> 0 & 1, f.ssse3 = c >> 9 & 1, f.cx16 = c >> 13 & 1, f.sse41 = c >> 19 & 1, f.sse42 = c >> 20 & 1;
+    f.movbe = c >> 22 & 1, f.popcnt = c >> 23 & 1;
+    bool fma = c >> 12 & 1, f16c = c >> 29 & 1, avx = c >> 28 & 1, osxsave = c >> 27 & 1;
+    if (avx && osxsave) {
+        unsigned lo, hi;
+        __asm__ volatile(".byte 0x0f, 0x01, 0xd0" : "=a"(lo), "=d"(hi) : "c"(0));  // xgetbv(0)
+        f.avx = (lo & 6) == 6;  // the OS saves XMM and YMM
+    }
+    f.fma = f.avx && fma, f.f16c = f.avx && f16c;
+    if (max >= 7) {
+        __cpuid_count(7, 0, a, b, c, d);
+        f.avx2 = f.avx && (b >> 5 & 1), f.bmi1 = b >> 3 & 1, f.bmi2 = b >> 8 & 1;
+    }
+    __cpuid(0x80000000, a, b, c, d);
+    if (a >= 0x80000001) {
+        __cpuid(0x80000001, a, b, c, d);
+        f.lahf = c & 1, f.lzcnt = c >> 5 & 1;
+    }
+    return f;
+}
 #endif
+
+const GameLibCpu *gamelib_cpu(void) {
+    static GameLibCpu c;
+    static bool done;
+    if (done) return &c;
+    done = true;
+#if defined(__x86_64__)
+    const char *env = getenv("LARECOMP_CPU");  // (force a level / test older CPUs on a newer one)
+    if (env && *env) {
+        snprintf(c.tag, sizeof c.tag, "%s", env);
+        snprintf(c.march, sizeof c.march, "-march=%s", env);
+        snprintf(c.zig, sizeof c.zig, "-mcpu=%s", env);
+        for (char *p = c.zig; *p; p++) if (*p == '-') *p = '_';
+        return &c;
+    }
+    X86 f = x86_features();
+    bool v2 = f.sse3 && f.ssse3 && f.sse41 && f.sse42 && f.popcnt && f.cx16 && f.lahf;
+    bool v3 = v2 && f.avx && f.avx2 && f.bmi1 && f.bmi2 && f.f16c && f.fma && f.lzcnt && f.movbe;
+    int level = v3 ? 3 : v2 ? 2 : 1;
+    snprintf(c.tag, sizeof c.tag, "%s", level == 3 ? "x86-64-v3" : level == 2 ? "x86-64-v2" : "x86-64");
+    snprintf(c.march, sizeof c.march, "-march=%s", c.tag);
+    snprintf(c.zig, sizeof c.zig, "-mcpu=%s", level == 3 ? "x86_64_v3" : level == 2 ? "x86_64_v2" : "x86_64");
+    // what the level lacks but this CPU has (Sandy / Ivy Bridge: AVX, F16C; Piledriver: + FMA; Penryn: SSE4.1)
+    const struct { bool has; const char *name, *flag, *zig; int upto; } extra[] = {
+        {f.sse3, "sse3", "-msse3", "sse3", 1},    {f.ssse3, "ssse3", "-mssse3", "ssse3", 1},
+        {f.sse41, "sse4.1", "-msse4.1", "sse4_1", 1}, {f.avx, "avx", "-mavx", "avx", 2},
+        {f.f16c, "f16c", "-mf16c", "f16c", 2},    {f.fma, "fma", "-mfma", "fma", 2},
+        {f.bmi1, "bmi1", "-mbmi", "bmi", 2},      {f.lzcnt, "lzcnt", "-mlzcnt", "lzcnt", 2},
+    };
+    for (size_t i = 0; i < sizeof extra / sizeof *extra; i++) {
+        if (!extra[i].has || level > extra[i].upto) continue;
+        size_t n = strlen(c.tag), m = strlen(c.march), z = strlen(c.zig);
+        snprintf(c.tag + n, sizeof c.tag - n, "+%s", extra[i].name);
+        snprintf(c.march + m, sizeof c.march - m, " %s", extra[i].flag);
+        snprintf(c.zig + z, sizeof c.zig - z, "+%s", extra[i].zig);
+    }
+#endif
+    return &c;
+}
+
+const char *gamelib_id(void) {
+    static char id[160];
+    if (!id[0]) {
+        const GameLibCpu *c = gamelib_cpu();
+        snprintf(id, sizeof id, "%s%s%s", GAMELIB_ID, c->tag[0] ? "-" : "", c->tag);
+    }
+    return id;
+}
+
+bool gamelib_old_cpu(void) {
+    const GameLibCpu *c = gamelib_cpu();
+    return c->tag[0] && strncmp(c->tag, "x86-64-v3", 9) != 0;
 }
 
 // The library's id file (<library>.id, written next to it by the build): its id (gamelib_full_id), read without
@@ -38,7 +115,7 @@ static bool id_matches(const char *lib, const char *want) {
     size_t n = fread(id, 1, sizeof id - 1, f);
     fclose(f);
     while (n && (id[n - 1] == '\n' || id[n - 1] == '\r')) id[--n] = 0;
-    return !strcmp(id, want);
+    return !strcmp(id, want) || !strncmp(id, GAMELIB_ID "-make", 16);
 }
 
 static bool exists(const char *p) {
@@ -82,7 +159,7 @@ static const GameLibTables *open_lib(const char *path, const char *want) {
 #endif
     if (!entry) { snprintf(g_error, sizeof g_error, "%s: not game code", path); return NULL; }
     const GameLibTables *t = entry();
-    if (!t || t->abi != GAMELIB_ABI || !t->id || strcmp(t->id, want)) {
+    if (!t || t->abi != GAMELIB_ABI || !t->id || (strcmp(t->id, want) && strncmp(t->id, GAMELIB_ID "-make", 16))) {
         snprintf(g_error, sizeof g_error, "%s was built for another version", path);
         return NULL;  // (left loaded: nothing of it runs)
     }
