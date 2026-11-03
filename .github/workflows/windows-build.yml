@@ -11,6 +11,9 @@ on:
         type: boolean
         default: true
   push:
+    branches:
+      - pokemon-za
+      - main
     tags: ['v*']
 permissions:
   contents: write
