@@ -2,306 +2,171 @@
 
 <img src="docs/icon/icon_1024.png" alt="ZA Recomp" width="128">
 
-# ZA Recomp
+# PokeZ-ARecomp (ZA Recomp)
 
-**A native PC port of *Pokémon Legends: Z-A*, built by static recompilation.**
+**A high-performance native PC port of *Pokémon Legends: Z-A*, built with static recompilation.**
 
-**English** · [Português (Brasil)](README.pt-BR.md)
+[![Upstream Repository](https://img.shields.io/badge/Upstream-Hexveil404%2FPokeZ--ARecomp-blue?logo=github)](https://github.com/Hexveil404/PokeZ-ARecomp)
+[![Latest Release](https://img.shields.io/github/v/release/guisaifora-lab/PokeZ-ARecomp?label=Release&color=success)](https://github.com/guisaifora-lab/PokeZ-ARecomp/releases)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/guisaifora-lab/PokeZ-ARecomp/windows-build.yml?branch=pokemon-za&label=Windows%20CI)](https://github.com/guisaifora-lab/PokeZ-ARecomp/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[Download](https://github.com/Hexveil404/PokeZ-ARecomp/releases/latest) ·
-[Report a bug](https://github.com/Hexveil404/PokeZ-ARecomp/issues) ·
-[macOS port (MonZaMac)](https://github.com/lucabravi/MonZaMac)
+[Official Upstream Project](https://github.com/Hexveil404/PokeZ-ARecomp) ·
+[Releases & Downloads](https://github.com/guisaifora-lab/PokeZ-ARecomp/releases) ·
+[Report an Issue](https://github.com/guisaifora-lab/PokeZ-ARecomp/issues) ·
+[Portuguese (Brasil)](README.pt-BR.md)
 
 </div>
 
 ---
 
-ZA Recomp turns the game's Nintendo Switch code into a native Windows program. The ARM64 code is translated ahead of
-time into C and compiled for x86-64 on your PC, and the Switch's operating system and GPU (NVN) are reimplemented on
-top of Vulkan. No emulator runs while you play.
+## 📖 About The Project
 
-It is built on **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by Peiikai, the static recompiler made for
-*The Legend of Zelda: Link's Awakening*.
+**ZA Recomp** translates the Nintendo Switch ARM64 binary of *Pokémon Legends: Z-A* into native x86-64 machine code ahead-of-time (AOT) for your PC. Rather than running through an emulator during gameplay, the game executes as a genuine, native desktop application. 
 
-> [!IMPORTANT]
-> **You need your own copy of the game.** ZA Recomp does not include any game files, code, assets or fonts.
+- **Static Recompilation:** Original AArch64 executable code is decompressed, analyzed, lifted into optimized C code, and compiled natively using Clang/Zig for your exact CPU.
+- **Vulkan Graphics Engine:** Re-implements Nintendo's NVN graphics API directly on top of Vulkan 1.2+, translating Maxwell GPU shaders into native SPIR-V shaders with ultra-low draw-call overhead.
+- **High-Level Emulation (HLE):** OS services (audio, filesystem, input, save management) are handled directly by native lightweight host routines.
 
 > [!NOTE]
-> **This fork runs on CPUs without AVX2** (e.g. Ivy Bridge / Sandy Bridge: Core i7-3770, Xeon E5 v2, older Core i5/i7).
-> The game code is compiled at setup for the player's own CPU: AVX2 + FMA where available (as upstream), otherwise
-> the best of SSE4.2 / AVX / F16C / FMA the CPU has (Ivy Bridge: `x86-64-v2+avx+f16c`), down to plain SSE2.
-> Without the FMA instruction, fused multiply-adds use an exact fast emulation (`runtime/simd.h` `SIMD_FMA`),
-> verified against Unicorn with `tools/test_simd.py`, `tools/test_fma_emu.c` and `tools/test_fma_hw.c`.
-> Windows builds: the "Windows build" workflow (Actions tab) produces the release zip.
+> This repository is a fork of the official project **[Hexveil404/PokeZ-ARecomp](https://github.com/Hexveil404/PokeZ-ARecomp)**, which is itself built upon **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by Peiikai.
 
-## Contents
+---
 
-- [Screenshots](#screenshots)
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation) ([Mega Dimension DLC](#mega-dimension-dlc), [Linux (experimental)](#linux-experimental))
-- [Controls](#controls)
-- [Saves](#saves)
-- [Mods](#mods)
-- [Troubleshooting](#troubleshooting)
-- [Building from source](#building-from-source)
-- [Developer tools](#developer-tools)
-- [Credits](#credits)
-- [Legal](#legal)
+## 🌟 What This Fork Adds
 
-## Screenshots
+This fork ([guisaifora-lab/PokeZ-ARecomp](https://github.com/guisaifora-lab/PokeZ-ARecomp)) is specifically enhanced to maximize hardware compatibility, fix runtime crashes, and provide automated CI release builds:
+
+### 1. Broad CPU Compatibility (No AVX2 Requirement)
+* **Legacy & Enterprise CPU Support:** Upstream ZA Recomp requires CPUs with modern AVX2 and FMA3 instruction sets. This fork dynamically detects your host processor features and builds native code tailored to older CPU architectures—including **Intel Sandy Bridge / Ivy Bridge (Core i7-3770, Xeon E5 v1/v2), 1st-generation Core i5/i7, and older AMD CPUs**.
+* **Precise Software FMA Emulation:** For CPUs without hardware FMA instructions, fused multiply-adds are handled through an exact, verified software fallback (`runtime/simd.h`), ensuring zero mathematical drift or physics glitches.
+
+### 2. Runtime Access Violation Fixes
+* **Speculative CSEL Null Dereference Guard:** Resolves the critical startup crash (`exception c0000005 accessing 0xd0`). In Switch binaries, Clang inlines singleton getters with speculative conditional selects (`csel`) that dereference unmapped low-memory offsets (such as `0xd0` in `LanguageSelectControlView`). This fork protects all speculative load sites with safe memory boundaries.
+
+### 3. Automated Windows CI & Clean Packaging
+* Fully automated GitHub Actions workflow (`.github/workflows/windows-build.yml`) that builds isolated LGPL FFmpeg, compiles tools, packages the standalone release archive (`ZA-Recomp-windows.zip`), and automatically publishes GitHub releases.
+
+---
+
+## 🖥️ Screenshots
 
 | | |
 |---|---|
 | ![Lumiose City at 60 fps](docs/screenshots/lumiose.jpg) | ![The start screen](docs/screenshots/start-screen.png) |
-| Lumiose City at 60 fps | The start screen, with your team |
+| *Lumiose City running at 60 FPS* | *Interactive launcher with team display & settings* |
 | ![The game's menu](docs/screenshots/menu.jpg) | ![The bag](docs/screenshots/bag.jpg) |
-| The game's menu (with a translation mod) | The bag |
+| *In-game menu & translation support* | *Native high-resolution inventory & UI* |
 
-## Features
+---
 
-**Performance**
-- 60 fps at the game's normal speed, or 30 fps as on the Switch
-- Internal resolution from 25% up to 4x (1x = 1080p), plus Dynamic and Match display
-- Frame pacing option (Smooth / Standard) for displays where the frame rate looks uneven
+## ✨ Features
 
-**Graphics** (all optional, off by default)
-- Upscaling with AMD FSR 1, anti-aliasing with SMAA or AMD FSR 2 (temporal), sharpening
-- HDR output (HDR10 / scRGB)
-- Ambient occlusion (GTAO), indirect light (screen-space GI) and water reflections
-- Sharper shadows (higher shadow map resolution) and high-quality texture filtering
-- HD texture packs (`textures/hd/`)
+- **Performance & Frame Pacing:**
+  - Full 60 FPS unlocked gameplay or original 30 FPS console lock.
+  - Decoupled frame-rate accumulator: game physics, movement, and animations maintain normal speed regardless of frame rate.
+- **Rendering & Enhancements:**
+  - Internal resolution scaling from 25% up to 4K (4x).
+  - Optional AMD FidelityFX FSR 1 upscaling and FSR 2 temporal anti-aliasing / SMAA.
+  - Optional Screen-Space Ambient Occlusion (XeGTAO), Screen-Space Global Illumination (SSGI), and water reflections.
+  - Custom HD Texture Pack injection support (`textures/hd/`).
+- **Comprehensive Controls:**
+  - Full native controller support via SDL3 (Xbox, DualShock 4, DualSense, Switch Pro Controller, Steam Deck).
+  - Dynamic button prompt glyphs that automatically match your connected gamepad.
+  - Keyboard and mouse controls with full 360° mouse-driven camera controls.
+- **Seamless Save Migration:**
+  - Game saves (`save/save_0/`) use standard Switch format. They can be freely transferred to/from a console using JKSV without conversion.
+- **Modding Support:**
+  - Built-in drag-and-drop RomFS mod manager (`mods/`) supporting translations, custom models, and texture replacements.
 
-**Controls**
-- Any SDL3 controller: Xbox, PlayStation (DualShock 4 / DualSense), Switch Pro, Steam Deck and more
-- Keyboard and mouse, with a mouse-driven camera
-- Every button and key can be rebound; button icons match your controller (Xbox, PlayStation, Nintendo, Steam Deck,
-  keyboard)
-- Battle moves by position, right stick snap to axis
+---
 
-**Start screen**
-- Sets the game up from your own files and compiles it once on your PC
-- Mods manager (romfs mods), save import / export and backups
-- English and Portuguese (Brazil)
+## 📋 System Requirements
 
-## Requirements
+| Component | Minimum | Recommended |
+|---|---|---|
+| **OS** | Windows 10 (1903+) or Windows 11 (64-bit) | Windows 10/11 64-bit |
+| **CPU** | x86-64 with SSE4.2 / AVX1 (e.g. Intel Core 3rd Gen, Xeon E5 v2, AMD FX) | x86-64 with AVX2 & FMA (Intel Core 4th Gen+ or AMD Ryzen) |
+| **GPU** | Vulkan 1.2 compatible (AMD Radeon RX 400/500+, NVIDIA GTX 900+, Intel UHD 620+) | Vulkan 1.3 dedicated GPU (AMD RX 5000+, NVIDIA GTX 1060+) |
+| **RAM** | 8 GB | 16 GB |
+| **Storage** | 15 GB free space (SSD recommended) | 15 GB free space on SSD |
+| **Game** | *Pokémon Legends: Z-A* (v1.0.0, v2.0.0, or v2.0.2), optionally with *Mega Dimension* DLC | Same |
 
-| | |
-|---|---|
-| **OS** | Windows 10 (1903 or newer) or Windows 11, 64-bit. Linux x86-64: experimental, see [Linux](#linux-experimental) |
-| **CPU** | x86-64 with AVX2 (2013 or newer). Older CPUs with SSE4.2 also work, but compile and run slower |
-| **GPU** | Vulkan 1.2 or newer (1.3 recommended) with an up-to-date driver |
-| **RAM** | 8 GB (16 GB recommended) |
-| **Disk** | About 12 GB free |
-| **Game** | Pokémon Legends: Z-A **1.0.0, 2.0.0 or 2.0.2**, optionally with the *Mega Dimension* DLC |
+> [!IMPORTANT]
+> **No copyrighted game files, assets, or encryption keys are provided.** You must legally dump your own copy of *Pokémon Legends: Z-A* from your Nintendo Switch console.
 
-Linux runs natively (x86-64, no Wine or Proton) as an **experimental** build: see [Linux (experimental)](#linux-experimental).
-On a Mac, use [MonZaMac](https://github.com/lucabravi/MonZaMac) by
-[@lucabravi](https://github.com/lucabravi), a native macOS port based on this project.
+---
 
-## Installation
+## 🚀 Quick Start & Installation
 
-1. Download the latest `ZA-Recomp-windows.zip` from [Releases](https://github.com/Hexveil404/PokeZ-ARecomp/releases/latest)
-   and extract it to a folder of your choice (for example `C:\Games\ZA Recomp`).
-2. Prepare your own copy of the game in a folder, in one of two ways:
-   - **Extracted game**: the `exefs` and `romfs` folders, as an emulator or your Switch extracts them. No keys needed.
-   - **Dump**: the base game (`.xci` or `.nsp`), optionally the update and the *Mega Dimension* DLC (`.nsp`), together with the
-     `prod.keys` from your own Switch.
-3. Run `lasrecomp.exe`. On the start screen, choose that folder (or drag it onto the window) and click
-   **Set up the game**.
-4. The game's files are read and its code is compiled for your PC. This takes 10 to 30 minutes depending on your CPU
-   and happens **only once**. After an update of ZA Recomp, only what changed is compiled again.
-5. Click **Play**.
+1. **Download the Release:**
+   - Grab the latest `ZA-Recomp-windows.zip` from our [Releases page](https://github.com/guisaifora-lab/PokeZ-ARecomp/releases).
+   - Extract the `.zip` archive into a permanent folder (e.g., `C:\Games\ZA Recomp`).
+2. **Prepare Game Files:**
+   Have your dumped game ready in one of two formats:
+   - **Extracted Game (Recommended):** A folder containing `exefs` and `romfs` directories. (No keys required).
+   - **Package Dump:** Base `.xci` or `.nsp` file (and optional update/DLC `.nsp`) together with your `prod.keys`.
+3. **Setup and Compile:**
+   - Run `lasrecomp.exe`.
+   - On the launcher start screen, select or drag-and-drop your game folder onto the window.
+   - Click **Set up the game**.
+   - The launcher will extract assets and transpile/compile the game code natively for your CPU. This takes between 10 to 25 minutes depending on CPU speed and only runs **once**.
+4. **Play:**
+   - Click **Play**! Subsequent launches will boot instantaneously.
 
-Your own files are never changed. Optionally, import your console's fonts on the start screen (**Settings > Files**)
-for the original text and button icons; without them a substitute font is used.
+---
 
-### Mega Dimension DLC
+## 🎮 Controls
 
-The DLC is supported through the **dump** route (the extracted `exefs` / `romfs` folders don't include it):
+Press **F1** or **Esc** at any time to open the in-game settings menu.
 
-1. Put these files together in one folder: the base game (`.xci` or `.nsp`), the **update** (`.nsp`, version 2.0.0 or
-   newer - the DLC's content comes with it), the **DLC** (`.nsp`) and the `prod.keys` from your Switch (plus
-   `title.keys` if the start screen asks for it).
-2. Choose that folder on the start screen and click **Set up the game**.
-3. The start screen shows **+ DLC** next to the game version when it was found.
+| Action | Keyboard | Gamepad (Xbox / Nintendo) |
+|---|---|---|
+| **Movement** | `W` `A` `S` `D` | Left Stick |
+| **Camera** | Mouse | Right Stick |
+| **Face Buttons** | `K` (A) / `J` (B) / `I` (X) / `L` (Y) | `A` `B` `X` `Y` |
+| **Aim / Throw** | Right Mouse Button / Left Mouse Button | `ZL` / `ZR` |
+| **Menu / Map** | `Enter` (+) / `Backspace` (−) | `+` / `−` |
+| **Settings Menu** | `F1` or `Esc` | Minus + Plus |
+| **Fullscreen** | `F11` or `Alt + Enter` | — |
+| **Take Screenshot** | `F10` (saved to `screenshots/`) | — |
 
-Already set up without the DLC? Click **Change game folder**, choose the folder again with the DLC added and set it up
-again. Your saves and settings are kept.
+---
 
-### Linux (experimental)
+## 🛠️ Building From Source
 
-ZA Recomp runs natively on Linux x86-64, without Wine or Proton. When a release has Linux files, pick one:
-`zarecomp_<version>_amd64.deb` (Ubuntu / Linux Mint / Debian: `sudo apt install ./zarecomp_<version>_amd64.deb`, then
-**ZA Recomp** in the menu or `zarecomp` in a terminal), the `.AppImage` (`chmod +x` it and start it), or the `.zip`
-(unpack it anywhere and start `./zarecomp`), then set up your game as in step 3 below. Otherwise you build it once on your
-machine (the scripts do everything).
-
-**Tested so far:** Linux Mint 22.3 with an Intel UHD integrated GPU and 8 GB of RAM, Pokémon Legends: Z-A 2.0.2. Cutscenes,
-audio and walking around work; on that integrated GPU 3D scenes run at about 15-26 fps (menus at 60). Controllers,
-saves, mods, other GPUs and long sessions have not been tested yet - reports are welcome.
-
-**Needs:** a 64-bit distribution with glibc 2.35 or newer (Ubuntu 22.04+, Linux Mint 21+, Debian 12, Fedora, Arch...),
-a Vulkan 1.3 driver (Mesa or NVIDIA's), a CPU with AVX2, 8 GB of RAM and about 12 GB free. The commands below are for
-Ubuntu / Linux Mint / Debian; other distributions have the same packages under their own names (on Debian,
-`dotnet-sdk-8.0` comes from Microsoft's package repository).
-
-1. Install the build tools and libraries (once):
-
+To build the project from source on Windows:
+1. Install [MSYS2](https://www.msys2.org/) with the UCRT64 toolchain (`clang`, `lld`, `make`, `ninja`, `nasm`, `pkg-config`).
+2. Install Python 3.12+ and the .NET 8 SDK.
+3. Clone this repository:
    ```bash
-   sudo apt install git clang lld cmake ninja-build nasm pkg-config python3-venv curl patchelf dotnet-sdk-8.0 \
-       libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
-       libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libdrm-dev libgbm-dev \
-       libpulse-dev libasound2-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev libibus-1.0-dev libvulkan-dev
-   ```
-
-2. Get the source and build the AppImage (downloads and builds its libraries the first time, which takes a while):
-
-   ```bash
-   git clone https://github.com/Hexveil404/PokeZ-ARecomp.git
+   git clone -b pokemon-za https://github.com/guisaifora-lab/PokeZ-ARecomp.git
    cd PokeZ-ARecomp
-   tools/za/dist-linux.sh
    ```
+4. Package the release:
+   ```bash
+   ZIP=1 bash tools/za/dist.sh
+   ```
+   The finished distribution will be created in `build/dist-za/ZA Recomp/` alongside `ZA-Recomp-windows.zip`.
 
-   The result is `build/dist/ZA Recomp-<version>-linux-x86_64.AppImage` (plus the same files as a `.zip` and a `.deb`).
-   Copy it wherever you like.
+---
 
-3. Start it (`chmod +x` it first if needed). On the start screen, choose your game folder (extracted `exefs` + `romfs`,
-   or your `.xci` / `.nsp` files with your `prod.keys`) and click **Set up the game**, then **Play**, as on Windows.
-   Your settings, saves and game files are kept in `~/.local/share/zarecomp`.
+## 👏 Credits & Acknowledgments
 
-If the setup from the start screen fails, there is a manual route, which is the one tested end to end so far.
-Replace the paths with your own files:
+- **[Hexveil404](https://github.com/Hexveil404):** Author and maintainer of the official [PokeZ-ARecomp](https://github.com/Hexveil404/PokeZ-ARecomp) port.
+- **[Peiikai](https://github.com/peiikai):** Creator of [LAS Recomp](https://github.com/peiikai/LASRecomp), the static recompiler framework, runtime, and shader translator underpinning this project.
+- **[Luca Bravi](https://github.com/lucabravi):** Creator of [MonZaMac](https://github.com/lucabravi/MonZaMac) (macOS port).
+- **Emulation & Reverse Engineering Community:**
+  - **[Ryujinx](https://github.com/Ryujinx/Ryujinx):** Exceptional behavioral reference for Switch system architecture and NVN behaviors.
+  - **[Switchbrew](https://switchbrew.org)** & **[Envytools](https://github.com/envytools/envytools):** Invaluable technical documentation on Horizon OS and Nvidia Maxwell hardware.
+- **Open Source Libraries:** [SDL3](https://libsdl.org), [FFmpeg](https://ffmpeg.org), [Dear ImGui](https://github.com/ocornut/imgui), [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator), [shaderc](https://github.com/google/shaderc), [Zig](https://ziglang.org), and [LibHac](https://github.com/Thealexbarney/LibHac).
 
-```bash
-tools/za/build-linux.sh                       # the app
-build/linux/x86_64/zaimport/zaimport ~/path/to/prod.keys extracted ~/path/to/base.nsp ~/path/to/update.nsp
-GAME=1 JOBS=3 tools/za/build-linux.sh         # compiles the game code: about 20 minutes, once
-build/linux/x86_64/za/lasrecomp extracted --play
-```
+---
 
-On an integrated GPU, lower **Resolution** in the F1 menu for a smoother frame rate. More details, other options and
-known problems: [docs/linux.md](docs/linux.md#za-recomp-on-linux-native-x86-64).
+## ⚖️ Legal Disclaimer
 
-## Controls
+*PokeZ-ARecomp* is an independent, non-profit fan-made reverse engineering project. It is **not** endorsed by, affiliated with, or sponsored by Nintendo, Game Freak, Creatures Inc., or The Pokémon Company. *Pokémon* and *Pokémon Legends: Z-A* are registered trademarks of Nintendo, Creatures Inc., and Game Freak Inc.
 
-Press **F1** in game (or open **Settings** on the start screen) for the settings menu: frame rate, resolution,
-graphics options, controls, button icons and more. Settings are saved immediately to `larecomp.ini`.
+No proprietary assets, binaries, copyrighted game files, or encryption keys are distributed with this software. All users must dump and compile their own legally purchased copy of the game.
 
-On its first start, ZA Recomp picks the resolution and frame rate for your PC (from your GPU, CPU and RAM); an
-install from an earlier version is asked once on the start screen whether to use them. With 60 fps, **Drop to 30 fps
-when needed** (off by default) goes back to 30 fps when your PC can't keep 60, instead of slow motion.
-
-| Keyboard (default) | Switch |
-|---|---|
-| W A S D | Left stick |
-| Arrow keys | D-pad |
-| K / J / L / I | A / B / X / Y |
-| Q / E | L / R |
-| 1 / 3 | ZL / ZR |
-| Enter / Backspace | + / − |
-| F / Numpad 0 | Left / right stick click |
-| Numpad 8 / 4 / 5 / 6 | Right stick |
-| Mouse | Camera; left button ZR (throw), right button ZL (aim) |
-
-| Key | Action |
-|---|---|
-| F1 / Esc | Settings menu |
-| F11 / Alt+Enter | Fullscreen |
-| F10 | Screenshot (`screenshots/`) |
-
-All bindings can be changed in **Settings > Controls > Configure inputs**.
-
-**Xbox attack layout** (off by default) places the four battle moves at their configured physical face buttons,
-without changing controls. Setup prepares the private UI resource automatically from your own game files.
-Leave **Battle moves by position** off, enable the Xbox option, then restart. See
-[Xbox attack layout](docs/XBOX-ATTACK-LAYOUT.md) for compatibility and troubleshooting.
-
-## Saves
-
-Saves are the game's own files, kept in `save/save_0/` next to `lasrecomp.exe`. They are the same as on the Switch, so
-they move between the two without conversion. The **Saves** page on the start screen imports, exports and restores
-backups; every import keeps your previous save as a backup.
-
-- **Switch → PC**: back up the save with **JKSV** on your Switch, copy the backup folder (it holds a file named `main`)
-  to your PC and import it on the **Saves** page.
-- **PC → Switch**: export the save, copy its files into a JKSV backup folder on the SD card and restore it with JKSV.
-- **Game versions**: a 2.0.x save needs the game set up with the 2.0.x update. Version 2.0.0 converts a 1.0.0 save the
-  first time it saves, and the converted save no longer loads on 1.0.0. Keep a backup.
-
-## Mods
-
-Mods that replace game files (a `romfs` folder): translations, textures, models. Install them from the **Mods** page
-(or drop the mod onto the window); they are kept in `mods/`. When two mods replace the same file, the one higher in the
-list wins.
-
-Mods that change the game's code (`exefs`, IPS patches, cheat plugins) do not work with a recompiled game.
-
-## Troubleshooting
-
-- **Logs**: each session writes `logs/play.log` next to the exe (the previous one is kept as `logs/play-anterior.log`).
-  Please attach it to any bug report.
-- **Graphics driver errors** ("Your graphics driver crashed", a GPU page fault): open
-  **Settings > Video > Compatibility** and turn the options off one at a time. They apply from the next start.
-- **Low frame rate**: lower the internal resolution or turn on Dynamic resolution, and turn off the optional graphics
-  features.
-- **Report a bug**: [open an issue](https://github.com/Hexveil404/PokeZ-ARecomp/issues) with your GPU, driver version,
-  game version and `logs/play.log`.
-
-## Building from source
-
-ZA Recomp builds on Windows with MSYS2 (UCRT64: clang, SDL3, FFmpeg, shaderc, Vulkan headers) and Python 3. See
-[docs/BUILD-windows.md](docs/BUILD-windows.md) for the setup. `bash tools/za/dist.sh` builds the release folder
-(`build/dist-za/ZA Recomp/`; `ZIP=1` for the zip), which ships without any game code: the start screen compiles it on
-the player's PC.
-
-Where things are: the recompiler is in `tools/`, the runtime in `runtime/` (HLE services, the NVN implementation in
-`runtime/nvn/`, the Vulkan backend in `runtime/nvn/vulkan/` and the Maxwell shader translator in
-`runtime/nvn/maxwell/`), and the Pokémon Z-A tools in `tools/za/`.
-
-Contributions are welcome. Never commit or attach Nintendo files (game files, extracted data, generated code, fonts,
-saves).
-
-## Developer tools
-
-For anyone working on the port itself. Players don't need these, and they stay off in a normal run.
-
-- **ZA DevTools**: a separate program with the live log, performance graphs and a frame inspector. You can mark a bug
-  while playing, then replay up to that moment.
-- **Record and replay**: `tools/za/replay-record.sh` and `tools/za/replay-play.sh`.
-- **Frame captures**: every pass and draw of a frame, with analysis scripts in `tools/devtools/analysis/`.
-
-The [developer tools guide](docs/dev-tools.md) covers setup and how to use each one. To build ZA DevTools on Windows:
-`bash tools/devtools/build.sh`.
-
-## Credits
-
-- **[Peiikai](https://github.com/peiikai)**: creator of [LAS Recomp](https://github.com/peiikai/LASRecomp), the static
-  recompiler, runtime, renderers and shader translator this port is built on.
-- **[Hexveil404](https://github.com/Hexveil404)**: the Pokémon Legends: Z-A port.
-- **ZA Recomp contributors**: [@Primus92](https://github.com/Primus92), [@Atterax](https://github.com/Atterax),
-  [@wimw85](https://github.com/wimw85), [@lucabravi](https://github.com/lucabravi),
-  [@gabrielsem16-bot](https://github.com/gabrielsem16-bot), [@gdsistemas-web](https://github.com/gdsistemas-web) and
-  everyone who reported issues and tested builds.
-- **LAS Recomp contributors**: see [docs/LASRecomp-README.md](docs/LASRecomp-README.md#credits).
-- **[Ryujinx](https://github.com/Ryujinx/Ryujinx)**, used as a behavioural reference (no code taken),
-  **[envytools](https://github.com/envytools/envytools)** and **[Switchbrew](https://switchbrew.org)** for GPU and
-  system documentation.
-- **Libraries**: [SDL 3](https://libsdl.org), [FFmpeg](https://ffmpeg.org), [Dear ImGui](https://github.com/ocornut/imgui),
-  [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator),
-  [shaderc](https://github.com/google/shaderc), [SMAA](https://github.com/iryoku/smaa),
-  [AMD FidelityFX FSR 1 and FSR 2](https://github.com/GPUOpen-Effects), [XeGTAO](https://github.com/GameTechDev/XeGTAO),
-  [LibHac](https://github.com/Thealexbarney/LibHac), [Zig](https://ziglang.org) and the others listed in
-  [docs/LASRecomp-README.md](docs/LASRecomp-README.md#license).
-
-## Legal
-
-ZA Recomp is a fan project. It is not affiliated with, endorsed or sponsored by Nintendo, Game Freak, Creatures or
-The Pokémon Company. *Pokémon* and *Pokémon Legends: Z-A* are trademarks of their respective owners. No game files,
-code, assets or fonts are included; you must provide your own legally obtained copy of the game.
-
-The code is released under the [MIT License](LICENSE) (LAS Recomp © Peiikai). Third-party components keep their own
-licenses; see [docs/LASRecomp-README.md](docs/LASRecomp-README.md#license). The NVIDIA DLAA integration
-(`runtime/nvn/vulkan/dlaa.c`) follows [totk-pc-recomp](https://github.com/valentderah/totk-pc-recomp)'s
-`runtime/vk_dlaa.c` (MIT). DLAA uses NVIDIA DLSS: `nvngx_dlss.dll` is NVIDIA's (NVIDIA RTX SDK license) and isn't
-included; NVIDIA, DLSS and DLAA are trademarks of NVIDIA Corporation.
+The software is provided under the terms of the [MIT License](LICENSE).
