@@ -60,4 +60,44 @@ def za_patches(build):
         out[FRAME_DT[build]] = _za_frame_dt
     if build in FRAME_STEP:
         out[FRAME_STEP[build]] = _za_frame_step
+    if build in NULL_DEREF_HAZARDS:
+        for addr, rt, rn in NULL_DEREF_HAZARDS[build]:
+            out[addr] = _za_safe_ldr(rt, rn)
     return out
+
+
+# Speculative CSEL + LDR null dereference hazards:
+# In AArch64, Clang compiles inlined getters with `csel x8, #0xd0, x8, eq` followed by `ldr xt, [x8]`.
+# When the singleton is uninitialized (guard == 0), x8 holds the offset (< 0x1000) and LD64 triggers exception 0xc0000005.
+# Safeguarding these loads to return 0 when ea < 0x1000 allows the following `cbz xt` check to safely take the null path.
+NULL_DEREF_HAZARDS = {
+    'b1f12fd919eae86a': [
+        (0x70004fb594, 0, 8),
+        (0x700076f4d0, 0, 22),
+        (0x700078d68c, 1, 8),
+        (0x700087ed40, 20, 8),
+        (0x7000af7174, 21, 8),
+        (0x7001ed6940, 0, 8),
+        (0x70029521bc, 19, 8),
+        (0x7002952218, 19, 8),
+        (0x7002ac5110, 19, 8),
+        (0x7002ac57d8, 19, 8),
+        (0x7002bbf634, 20, 8),
+        (0x7002bc3d6c, 20, 8),
+        (0x7002bc40f8, 20, 8),
+        (0x7002c20b44, 20, 8),
+        (0x7002c399ac, 20, 8),
+        (0x7002c3a458, 20, 8),
+        (0x7002c874d0, 19, 8),
+        (0x7002c88e3c, 20, 8),
+        (0x7002cc4ab0, 20, 8),
+        (0x7002d25ea4, 20, 8),
+    ]
+}
+
+
+def _za_safe_ldr(rt, rn):
+    def patch(gen, a):
+        return (f'{{ uint64_t ea = c->x[{rn}]; c->x[{rt}] = (ea < 0x1000) ? 0 : LD64(ea); }}'
+                f'  /* {a:#x}: safe ldr x{rt}, [x{rn}] */')
+    return patch
