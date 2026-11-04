@@ -48,6 +48,9 @@ jobs:
             mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-vulkan-devel mingw-w64-ucrt-x86_64-shaderc
             mingw-w64-ucrt-x86_64-spirv-tools mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-vulkan-memory-allocator mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-gcc
+      - name: LGPL FFmpeg (tools/build_deps_windows.sh)
+        run: bash tools/build_deps_windows.sh
       - name: Package Windows Release (tools/za/dist.sh)
         run: |
           ZIP=1 bash tools/za/dist.sh
